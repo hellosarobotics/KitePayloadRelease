@@ -14,15 +14,16 @@ Servo myservo;
 Adafruit_BME280 bme;
 
 // --- EEPROM settings ---
-#define EEPROM_SIZE 4  // un float = 4 byte
-float seaLevelPressure_hpa = 1013.25; 
+// 4 byte per pressione + 4 byte per quota rilascio
+#define EEPROM_SIZE 8
+float seaLevelPressure_hpa = 1013.25;
+float releaseAltitude = 0;
 
 // --- Altitudine relativa ---
 float baseAltitude = 0;
 float maxAltitude = 0;
 
 // --- Sgancio automatico ---
-float releaseAltitude = 0;     
 bool payloadReleased = false;
 
 // --- Stato sensore ---
@@ -46,6 +47,24 @@ float loadSeaLevelPressure() {
   return value;
 }
 
+void saveReleaseAltitude(float value) {
+  EEPROM.begin(EEPROM_SIZE);
+  byte* p = (byte*)(void*)&value;
+  for (int i = 4; i < 8; i++) EEPROM.write(i, *p++);
+  EEPROM.commit();
+  EEPROM.end();
+}
+
+float loadReleaseAltitude() {
+  float value;
+  EEPROM.begin(EEPROM_SIZE);
+  byte* p = (byte*)(void*)&value;
+  for (int i = 4; i < 8; i++) *p++ = EEPROM.read(i);
+  EEPROM.end();
+  if (isnan(value) || value < 0 || value > 10000) return 0; // fallback
+  return value;
+}
+
 void RELEASE() {
   Serial.println("Rilascio (RELEASE)");
   myservo.write(0);
@@ -57,15 +76,15 @@ void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
   html += "<style>";
-  html += "body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:0;}";
-  html += ".container{max-width:400px;margin:40px auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 4px 10px rgba(0,0,0,0.2);text-align:center;}";
+  html += "body{font-family:Arial,sans-serif;margin:0;padding:0;}";
+  html += ".container{max-width:400px;margin:40px auto;background:#fff;padding:20px;text-align:center;}";
   html += "h1{font-size:22px;margin-bottom:10px;color:#333;}";
   html += "h2{font-size:18px;margin-bottom:20px;color:#666;}";
   html += "p{font-size:16px;margin:8px 0;}";
-  html += "#status{margin:15px auto;padding:10px;border-radius:5px;color:#fff;font-weight:bold;width:80%;}";
+  html += "#status{margin:15px auto;padding:10px;color:#fff;font-weight:bold;width:80%;}";
   html += "form{margin:15px 0;}";
-  html += "input[type=number]{padding:5px;width:120px;border:1px solid #ccc;border-radius:5px;}";
-  html += "input[type=submit],button{padding:10px 20px;font-size:16px;border:none;border-radius:5px;background:#007BFF;color:white;cursor:pointer;}";
+  html += "input[type=number]{padding:5px;width:120px;border:1px solid #ccc;}";
+  html += "input[type=submit],button{padding:10px 20px;font-size:16px;border:none;background:#007BFF;color:white;cursor:pointer;}";
   html += "input[type=submit]:hover,button:hover{background:#0056b3;}";
   html += "</style>";
   html += "<script>";
@@ -156,8 +175,9 @@ void handleSetPressure() {
 void handleSetReleaseAltitude() {
   if (server.hasArg("relAlt")) {
     releaseAltitude = server.arg("relAlt").toFloat();
+    saveReleaseAltitude(releaseAltitude);
     payloadReleased = false; // resetta stato quando si imposta nuova quota
-    Serial.print("Quota sgancio impostata: ");
+    Serial.print("Quota sgancio impostata e salvata: ");
     Serial.println(releaseAltitude);
   }
   server.sendHeader("Location", "/", true);
@@ -165,7 +185,6 @@ void handleSetReleaseAltitude() {
 }
 
 void handleResetRelease() {
-  // Reset altitudine relativa, massima e stato sgancio
   if (bmeAvailable) baseAltitude = bme.readAltitude(seaLevelPressure_hpa);
   else baseAltitude = 0;
   maxAltitude = 0;
@@ -181,10 +200,12 @@ void setup() {
   myservo.write(180);
 
   seaLevelPressure_hpa = loadSeaLevelPressure();
+  releaseAltitude = loadReleaseAltitude();
   Serial.print("Pressione livello mare iniziale: ");
   Serial.println(seaLevelPressure_hpa);
+  Serial.print("Quota sgancio iniziale: ");
+  Serial.println(releaseAltitude);
 
-  // Prova sia indirizzo 0x76 che 0x77
   if (bme.begin(0x76) || bme.begin(0x77)) {
     bmeAvailable = true;
     Serial.println("BME280 trovato!");
@@ -193,7 +214,6 @@ void setup() {
     bmeAvailable = false;
   }
 
-  // Altitudine base
   baseAltitude = bmeAvailable ? bme.readAltitude(seaLevelPressure_hpa) : 0;
   maxAltitude = 0;
 
@@ -218,7 +238,6 @@ void loop() {
     float altitude = bme.readAltitude(seaLevelPressure_hpa);
     float relativeAltitude = altitude - baseAltitude;
 
-    // Rilascio automatico solo una volta
     if (!payloadReleased && releaseAltitude > 0 && relativeAltitude >= releaseAltitude) {
       Serial.println("Quota di sgancio raggiunta! Rilascio carico...");
       RELEASE();
