@@ -67,9 +67,9 @@ float loadReleaseAltitude() {
 
 void RELEASE() {
   Serial.println("Rilascio (RELEASE)");
-  myservo.write(0);
-  delay(1000);
   myservo.write(180);
+  //delay(1000);
+  //myservo.write(180);
 }
 
 void handleRoot() {
@@ -192,12 +192,13 @@ void handleResetRelease() {
   Serial.println("Altitudine relativa, massima e stato sgancio resettati");
   server.sendHeader("Location", "/", true);
   server.send(302, "text/plain", "");
+  myservo.write(0);
 }
 
 void setup() {
   Serial.begin(115200);
   myservo.attach(D5);
-  myservo.write(180);
+  myservo.write(0);
 
   seaLevelPressure_hpa = loadSeaLevelPressure();
   releaseAltitude = loadReleaseAltitude();
