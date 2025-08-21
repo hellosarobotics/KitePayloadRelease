@@ -6,6 +6,7 @@
 #include <Servo.h>
 #include <EEPROM.h>
 
+// ======= Wi-Fi AP =======
 const char* ssid = "KiteRelease";
 const char* password = "12345678";
 
@@ -13,35 +14,33 @@ ESP8266WebServer server(80);
 Servo myservo;
 Adafruit_BME280 bme;
 
-// --- EEPROM settings ---
+// ======= EEPROM =======
 // 4 byte per pressione + 4 byte per quota rilascio
 #define EEPROM_SIZE 8
 float seaLevelPressure_hpa = 1013.25;
 float releaseAltitude = 0;
 
-// --- Altitudine relativa ---
+// ======= Stato altitudine =======
 float baseAltitude = 0;
-
-// --- Sgancio automatico ---
 bool payloadReleased = false;
-
-// --- Stato sensore ---
 bool bmeAvailable = false;
 
-// --- Cache letture (usate SIA per la logica che per la UI) ---
+// ======= Cache letture (UI + logica) =======
 float g_temperature = 0;
 float g_humidity = 0;
 float g_pressure = 0;
 float g_altitude = 0;
-float g_relAltitude = 0;    // QUELLA usata per decidere lo sgancio
+float g_relAltitude = 0;      // usata per decidere lo sgancio
 float g_maxRelAltitude = 0;
+float relAltUsedAtRelease = NAN; // quota usata al momento del rilascio
 
-float relAltUsedAtRelease = NAN; // memorizza la quota relativa usata al momento del rilascio
-
-// (opzionale) Filtro esponenziale per stabilizzare l'altitudine relativa
-const float ALT_ALPHA = 0.3f;   // 0 < ALT_ALPHA <= 1; 0.3 ≈ buon compromesso
+// Filtro esponenziale (stabilizza l'altitudine relativa)
+const float ALT_ALPHA = 0.3f; // 0<alpha<=1; 0.3 ~ buon compromesso
 bool altFilterInit = false;
 
+// ======= Isteresi sgancio =======
+uint32_t aboveThresholdSince = 0;     // millis quando superiamo la soglia
+const uint32_t HYSTERESIS_MS = 1000;  // 1 secondo di conferma
 
 // ====================== EEPROM UTILS ======================
 void saveSeaLevelPressure(float value) {
@@ -51,7 +50,6 @@ void saveSeaLevelPressure(float value) {
   EEPROM.commit();
   EEPROM.end();
 }
-
 float loadSeaLevelPressure() {
   float value;
   EEPROM.begin(EEPROM_SIZE);
@@ -61,7 +59,6 @@ float loadSeaLevelPressure() {
   if (isnan(value) || value < 300 || value > 1100) return 1013.25; // fallback
   return value;
 }
-
 void saveReleaseAltitude(float value) {
   EEPROM.begin(EEPROM_SIZE);
   byte* p = (byte*)(void*)&value;
@@ -69,7 +66,6 @@ void saveReleaseAltitude(float value) {
   EEPROM.commit();
   EEPROM.end();
 }
-
 float loadReleaseAltitude() {
   float value;
   EEPROM.begin(EEPROM_SIZE);
@@ -80,7 +76,7 @@ float loadReleaseAltitude() {
   return value;
 }
 
-// ====================== SERVO RELEASE ======================
+// ====================== SERVO ======================
 void RELEASE() {
   Serial.println("Rilascio (RELEASE)");
   myservo.write(180);
@@ -88,12 +84,12 @@ void RELEASE() {
   myservo.write(0);
 }
 
-// ====================== WEB PAGES ======================
+// ====================== WEB UI ======================
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-  // Colore barra di stato su Android/Chrome
-  html += "<meta name='theme-color' content='#10b981' id='themeColor'>";
+  // Colore barra di stato su Android/Chrome (aggiornato via JS)
+  html += "<meta name='theme-color' content='#22c55e' id='themeColor'>";
   html += "<style>";
   html += "body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;background:#ffffff;color:#111827;}";
   html += ".container{max-width:760px;margin:28px auto;padding:0 16px;}";
@@ -102,27 +98,18 @@ void handleRoot() {
   html += ".status{padding:10px 14px;border-radius:10px;color:#fff;font-weight:700;min-width:220px;text-align:center;}";
   html += ".status.ok{background:#22c55e;}";      // verde
   html += ".status.bad{background:#ef4444;}";    // rosso
-
-  // sempre 2 colonne, anche su schermi piccoli
-  html += ".grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px;}";
-
-  html += ".card{background:#f9fafb;border:1px solid #e5e7eb;";
-  html += "box-shadow:0 2px 6px rgba(0,0,0,0.08);border-radius:12px;padding:16px 16px 14px}";
+  html += ".grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px;}"; // 2 colonne SEMPRE
+  html += ".card{background:#f9fafb;border:1px solid #e5e7eb;box-shadow:0 2px 6px rgba(0,0,0,0.08);border-radius:12px;padding:16px 16px 14px}";
   html += ".label{color:#6b7280;font-size:12px;letter-spacing:.5px;text-transform:uppercase}";
   html += ".value{color:#111827;font-weight:800;font-size:26px;line-height:1.1;margin-top:6px}";
   html += ".unit{opacity:.65;font-weight:600;font-size:16px;margin-left:6px}";
   html += ".sub{color:#6b7280;font-size:12px;margin-top:8px}";
-
   html += ".row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}";
-  html += ".btn, .btn-ghost{appearance:none;border:none;cursor:pointer;border-radius:10px;padding:10px 14px;";
-  html += "font-weight:700;color:#fff;background:#3b82f6;}";
-  html += ".btn:hover{background:#2563eb}";
-  html += ".btn-ghost{background:#fff;border:1px solid #d1d5db;color:#111827}";
-  html += ".btn-ghost:hover{background:#f3f4f6}";
-
+  html += ".btn,.btn-ghost{appearance:none;border:none;cursor:pointer;border-radius:10px;padding:10px 14px;font-weight:700}";
+  html += ".btn{color:#fff;background:#3b82f6} .btn:hover{background:#2563eb}";
+  html += ".btn-ghost{background:#fff;border:1px solid #d1d5db;color:#111827} .btn-ghost:hover{background:#f3f4f6}";
   html += "form{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}";
-  html += "input[type=number]{background:#fff;border:1px solid #d1d5db;";
-  html += "color:#111827;border-radius:8px;padding:8px 10px;min-width:140px}";
+  html += "input[type=number]{background:#fff;border:1px solid #d1d5db;color:#111827;border-radius:8px;padding:8px 10px;min-width:140px}";
   html += "input[type=submit]{border:none;border-radius:8px;padding:10px 14px;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}";
   html += "input[type=submit]:hover{background:#2563eb}";
   html += ".warn{color:#f59e0b}";
@@ -191,9 +178,8 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
-
 void handleData() {
-  // Usa SOLO i valori in cache aggiornati dalla loop()
+  // Usa SOLO la cache aggiornata dalla loop()
   String json = "{";
   json += "\"temperatura\":" + String(g_temperature, 1) + ",";
   json += "\"umidita\":" + String(g_humidity, 1) + ",";
@@ -208,7 +194,7 @@ void handleData() {
 }
 
 void handleRelease() {
-  relAltUsedAtRelease = g_relAltitude; // se rilasci manualmente, annota la quota corrente
+  relAltUsedAtRelease = g_relAltitude; // rilascio manuale: salva quota corrente
   RELEASE();
   payloadReleased = true;
   server.sendHeader("Location", "/", true);
@@ -225,7 +211,8 @@ void handleSetPressure() {
       Serial.println(newPressure);
       // Ricalibra base e filtro
       if (bmeAvailable) baseAltitude = bme.readAltitude(seaLevelPressure_hpa);
-      altFilterInit = false; // rilancia il filtro con la nuova base
+      altFilterInit = false; // riavvia il filtro con la nuova base
+      aboveThresholdSince = 0; // prudenza
     }
   }
   server.sendHeader("Location", "/", true);
@@ -236,8 +223,9 @@ void handleSetReleaseAltitude() {
   if (server.hasArg("relAlt")) {
     releaseAltitude = server.arg("relAlt").toFloat();
     saveReleaseAltitude(releaseAltitude);
-    payloadReleased = false; // resetta stato quando si imposta nuova quota
-    relAltUsedAtRelease = NAN;
+    payloadReleased = false;      // reset stato
+    relAltUsedAtRelease = NAN;    // azzera quota usata al rilascio
+    aboveThresholdSince = 0;      // azzera isteresi
     Serial.print("Quota sgancio impostata e salvata: ");
     Serial.println(releaseAltitude);
   }
@@ -252,7 +240,8 @@ void handleResetRelease() {
   g_maxRelAltitude = 0;
   payloadReleased = false;
   relAltUsedAtRelease = NAN;
-  altFilterInit = false;      // ri-inizializza il filtro dalla prossima lettura
+  altFilterInit = false;      // il filtro riparte dal prossimo campione
+  aboveThresholdSince = 0;    // azzera isteresi
 
   Serial.println("Altitudine relativa, massima e stato sgancio resettati");
   server.sendHeader("Location", "/", true);
@@ -283,7 +272,7 @@ void setup() {
 
   baseAltitude = bmeAvailable ? bme.readAltitude(seaLevelPressure_hpa) : 0;
 
-  // Prime letture per popolare la cache (così la UI non mostra zeri all'avvio)
+  // Prime letture per popolare la cache (UI senza zeri all'avvio)
   if (bmeAvailable) {
     g_temperature = bme.readTemperature();
     g_humidity    = bme.readHumidity();
@@ -291,7 +280,7 @@ void setup() {
     g_altitude    = bme.readAltitude(seaLevelPressure_hpa);
     g_relAltitude = g_altitude - baseAltitude;
     g_maxRelAltitude = g_relAltitude;
-    altFilterInit = true; // filtro inizializzato con il primo valore
+    altFilterInit = true; // inizializza filtro
   }
 
   WiFi.softAP(ssid, password);
@@ -312,7 +301,7 @@ void loop() {
   server.handleClient();
 
   if (bmeAvailable) {
-    // Letture grezze BME
+    // Letture BME
     float temperature = bme.readTemperature();
     float humidity    = bme.readHumidity();
     float pressure    = bme.readPressure() / 100.0F;
@@ -321,7 +310,7 @@ void loop() {
     // Altitudine relativa grezza
     float relAltRaw = altitude - baseAltitude;
 
-    // Filtro (facoltativo ma consigliato per stabilità e coerenza UI/logica)
+    // Filtro per stabilizzare
     if (!altFilterInit) {
       g_relAltitude = relAltRaw;
       altFilterInit = true;
@@ -337,14 +326,26 @@ void loop() {
 
     if (g_relAltitude > g_maxRelAltitude) g_maxRelAltitude = g_relAltitude;
 
-    // Logica di sgancio: USA la stessa g_relAltitude che mostriamo in UI
-    if (!payloadReleased && releaseAltitude > 0 && g_relAltitude >= releaseAltitude) {
-      Serial.print("Quota di sgancio raggiunta (relAlt = ");
-      Serial.print(g_relAltitude, 2);
-      Serial.println(" m). Rilascio carico...");
-      relAltUsedAtRelease = g_relAltitude; // memorizza la quota reale usata
-      RELEASE();
-      payloadReleased = true;
+    // ===== Logica di sgancio con isteresi =====
+    if (!payloadReleased && releaseAltitude > 0) {
+      if (g_relAltitude >= releaseAltitude) {
+        if (aboveThresholdSince == 0) {
+          aboveThresholdSince = millis(); // appena superata la soglia
+        } else if (millis() - aboveThresholdSince >= HYSTERESIS_MS) {
+          Serial.printf("Quota di sgancio confermata (relAlt = %.2f m per >= %u ms). Rilascio...\n",
+                        g_relAltitude, HYSTERESIS_MS);
+          relAltUsedAtRelease = g_relAltitude;
+          RELEASE();
+          payloadReleased = true;
+        }
+      } else {
+        // scesi sotto soglia → annulla finestra di conferma
+        aboveThresholdSince = 0;
+      }
     }
   }
+
+  // Se vuoi ridurre il calore: puoi portare a delay(100..1000).
+  // delay(1) mantiene l'interfaccia più reattiva.
+  delay(1);
 }
