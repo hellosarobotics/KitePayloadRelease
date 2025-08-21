@@ -92,56 +92,105 @@ void RELEASE() {
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  // Colore barra di stato su Android/Chrome
+  html += "<meta name='theme-color' content='#10b981' id='themeColor'>";
   html += "<style>";
-  html += "body{font-family:Arial,sans-serif;margin:0;padding:0;background:#f1f5f9;}";
-  html += ".container{max-width:420px;margin:40px auto;background:#fff;padding:20px 22px;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,0.08);text-align:center;}";
-  html += "h1{font-size:22px;margin-bottom:10px;color:#111827;}";
-  html += "h2{font-size:18px;margin:16px 0 10px;color:#374151;}";
-  html += "p{font-size:16px;margin:8px 0;color:#111827;}";
-  html += "#status{margin:15px auto;padding:10px;color:#fff;font-weight:bold;width:85%;border-radius:8px;}";
-  html += "form{margin:15px 0;}";
-  html += "input[type=number]{padding:8px 10px;width:140px;border:1px solid #d1d5db;border-radius:8px;}";
-  html += "input[type=submit],button{padding:10px 16px;font-size:16px;border:none;border-radius:10px;background:#3b82f6;color:white;cursor:pointer;}";
-  html += "input[type=submit]:hover,button:hover{background:#2563eb;}";
-  html += "a{text-decoration:none;}";
+  html += "body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;background:#ffffff;color:#111827;}";
+  html += ".container{max-width:760px;margin:28px auto;padding:0 16px;}";
+  html += ".header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}";
+  html += ".title{font-size:20px;font-weight:700;letter-spacing:.3px}";
+  html += ".status{padding:10px 14px;border-radius:10px;color:#fff;font-weight:700;min-width:220px;text-align:center;}";
+  html += ".status.ok{background:#22c55e;}";      // verde
+  html += ".status.bad{background:#ef4444;}";    // rosso
+
+  // sempre 2 colonne, anche su schermi piccoli
+  html += ".grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px;}";
+
+  html += ".card{background:#f9fafb;border:1px solid #e5e7eb;";
+  html += "box-shadow:0 2px 6px rgba(0,0,0,0.08);border-radius:12px;padding:16px 16px 14px}";
+  html += ".label{color:#6b7280;font-size:12px;letter-spacing:.5px;text-transform:uppercase}";
+  html += ".value{color:#111827;font-weight:800;font-size:26px;line-height:1.1;margin-top:6px}";
+  html += ".unit{opacity:.65;font-weight:600;font-size:16px;margin-left:6px}";
+  html += ".sub{color:#6b7280;font-size:12px;margin-top:8px}";
+
+  html += ".row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}";
+  html += ".btn, .btn-ghost{appearance:none;border:none;cursor:pointer;border-radius:10px;padding:10px 14px;";
+  html += "font-weight:700;color:#fff;background:#3b82f6;}";
+  html += ".btn:hover{background:#2563eb}";
+  html += ".btn-ghost{background:#fff;border:1px solid #d1d5db;color:#111827}";
+  html += ".btn-ghost:hover{background:#f3f4f6}";
+
+  html += "form{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}";
+  html += "input[type=number]{background:#fff;border:1px solid #d1d5db;";
+  html += "color:#111827;border-radius:8px;padding:8px 10px;min-width:140px}";
+  html += "input[type=submit]{border:none;border-radius:8px;padding:10px 14px;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}";
+  html += "input[type=submit]:hover{background:#2563eb}";
+  html += ".warn{color:#f59e0b}";
   html += "</style>";
+
   html += "<script>";
+  html += "function setThemeColor(hex){var m=document.getElementById('themeColor'); if(m){m.setAttribute('content',hex);} }";
   html += "function aggiorna(){fetch('/data').then(r=>r.json()).then(d=>{";
-  html += "document.getElementById('temp').innerHTML=d.temperatura.toFixed(1)+' &deg;C';";
-  html += "document.getElementById('hum').innerHTML=d.umidita.toFixed(1)+' %';";
-  html += "document.getElementById('press').innerHTML=d.pressione.toFixed(1)+' hPa';";
-  html += "document.getElementById('alt').innerHTML=d.altitudine.toFixed(1)+' m';";
-  html += "document.getElementById('relAlt').innerHTML=d.altRel.toFixed(1)+' m';";
-  html += "document.getElementById('maxAlt').innerHTML=d.altMax.toFixed(1)+' m';";
-  html += "if(d.relAltAtRelease!==null){document.getElementById('altAtRelease').innerHTML=d.relAltAtRelease.toFixed(2)+' m';}else{document.getElementById('altAtRelease').innerHTML='--';}";
-  html += "if(d.released){document.getElementById('status').style.background='red';document.getElementById('status').innerHTML='Carico RILASCIATO';}";
-  html += "else{document.getElementById('status').style.background='green';document.getElementById('status').innerHTML='Carico NON rilasciato';}";
-  html += "});}";
-  html += "setInterval(aggiorna,2000);window.onload=aggiorna;";
+  html += "document.getElementById('temp').textContent=d.temperatura.toFixed(1);";
+  html += "document.getElementById('hum').textContent=d.umidita.toFixed(1);";
+  html += "document.getElementById('press').textContent=d.pressione.toFixed(1);";
+  html += "document.getElementById('alt').textContent=d.altitudine.toFixed(1);";
+  html += "document.getElementById('relAlt').textContent=d.altRel.toFixed(1);";
+  html += "document.getElementById('maxAlt').textContent=d.altMax.toFixed(1);";
+  html += "if(d.relAltAtRelease!==null){document.getElementById('altAtRelease').textContent=d.relAltAtRelease.toFixed(2);}else{document.getElementById('altAtRelease').textContent='--';}";
+  html += "var s=document.getElementById('status');";
+  html += "if(d.released){s.className='status bad'; s.textContent='Carico RILASCIATO'; setThemeColor('#ef4444');}";
+  html += "else{ s.className='status ok'; s.textContent='Carico NON rilasciato'; setThemeColor('#22c55e');}";
+  html += "}).catch(()=>{});}";
+
+  html += "setInterval(aggiorna,2000); window.onload=aggiorna;";
   html += "</script></head><body>";
+
   html += "<div class='container'>";
-  html += "<h1>Kite Payload Release</h1>";
-  html += "<div id='status'>--</div>";
-  html += "<h2>Dati BME280</h2>";
-  if (!bmeAvailable) html += "<p style='color:red;'>ATTENZIONE: BME280 non trovato!</p>";
-  html += "<p>Temperatura: <span id='temp'>--</span></p>";
-  html += "<p>Umidità: <span id='hum'>--</span></p>";
-  html += "<p>Pressione: <span id='press'>--</span></p>";
-  html += "<p>Altitudine: <span id='alt'>--</span></p>";
-  html += "<p>Altitudine relativa: <span id='relAlt'>--</span></p>";
-  html += "<p>Altitudine massima: <span id='maxAlt'>--</span></p>";
-  html += "<p>Altitudine usata per lo sgancio: <span id='altAtRelease'>--</span></p>";
-  html += "<form action='/setPressure' method='POST'>";
-  html += "<p>Pressione livello mare: <input type='number' step='0.01' name='slp' value='" + String(seaLevelPressure_hpa, 2) + "'> hPa ";
-  html += "<input type='submit' value='Salva'></p></form>";
-  html += "<form action='/setReleaseAltitude' method='POST'>";
-  html += "<p>Quota sgancio automatica: <input type='number' step='0.1' name='relAlt' value='" + String(releaseAltitude, 1) + "'> m ";
-  html += "<input type='submit' value='Imposta'></p></form>";
-  html += "<p><a href='/release'><button>RILASCIA</button></a></p>";
-  html += "<p><a href='/resetRelease'><button>Reset Altitudine</button></a></p>";
+  html += "  <div class='header'>";
+  html += "    <div class='title'>Kite Payload Release</div>";
+  html += "    <div id='status' class='status'>--</div>";
+  html += "  </div>";
+
+  if (!bmeAvailable) {
+    html += "<div class='card' style='grid-column:1/-1'><div class='label'>Sensore</div>";
+    html += "<div class='sub warn'>ATTENZIONE: BME280 non trovato!</div></div>";
+  }
+
+  html += "  <div class='grid'>";
+  html += "    <div class='card'><div class='label'>Temperatura</div><div class='value'><span id='temp'>--</span><span class='unit'>&deg;C</span></div></div>";
+  html += "    <div class='card'><div class='label'>Umidità</div><div class='value'><span id='hum'>--</span><span class='unit'>%</span></div></div>";
+  html += "    <div class='card'><div class='label'>Pressione</div><div class='value'><span id='press'>--</span><span class='unit'>hPa</span></div></div>";
+  html += "    <div class='card'><div class='label'>Altitudine assoluta</div><div class='value'><span id='alt'>--</span><span class='unit'>m</span></div></div>";
+  html += "    <div class='card'><div class='label'>Altitudine relativa</div><div class='value'><span id='relAlt'>--</span><span class='unit'>m</span></div></div>";
+  html += "    <div class='card'><div class='label'>Altitudine massima</div><div class='value'><span id='maxAlt'>--</span><span class='unit'>m</span></div></div>";
+  html += "    <div class='card' style='grid-column:1/-1'><div class='label'>Quota usata per lo sgancio</div>";
+  html += "      <div class='value'><span id='altAtRelease'>--</span><span class='unit'>m</span></div>";
+  html += "    </div>";
+  html += "  </div>";
+
+  html += "  <div class='card' style='margin-top:14px'>";
+  html += "    <div class='label'>Impostazioni</div>";
+  html += "    <form action='/setPressure' method='POST'>";
+  html += "      <span class='sub' style='min-width:170px;display:inline-block'>Pressione livello mare (hPa)</span>";
+  html += "      <input type='number' step='0.01' name='slp' value='" + String(seaLevelPressure_hpa, 2) + "'>";
+  html += "      <input type='submit' value='Salva'>";
+  html += "    </form>";
+  html += "    <form action='/setReleaseAltitude' method='POST'>";
+  html += "      <span class='sub' style='min-width:170px;display:inline-block'>Quota sgancio automatica (m)</span>";
+  html += "      <input type='number' step='0.1' name='relAlt' value='" + String(releaseAltitude, 1) + "'>";
+  html += "      <input type='submit' value='Imposta'>";
+  html += "    </form>";
+  html += "    <div class='row'>";
+  html += "      <a href='/release'><button class='btn'>RILASCIA</button></a>";
+  html += "      <a href='/resetRelease'><button class='btn-ghost'>Reset Altitudine</button></a>";
+  html += "    </div>";
+  html += "  </div>";
+
   html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
+
 
 void handleData() {
   // Usa SOLO i valori in cache aggiornati dalla loop()
