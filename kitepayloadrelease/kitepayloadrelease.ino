@@ -36,7 +36,7 @@ float relAltUsedAtRelease = NAN; // quota usata al momento del rilascio
 
 // ======= Filtri =======
 // 1) Media esponenziale (smoothing finale)
-const float ALT_ALPHA = 0.3f; // 0<alpha<=1; 0.3 ~ buon compromesso
+const float ALT_ALPHA = 0.5f; // 0<alpha<=1; 0.3 ~ buon compromesso
 bool altFilterInit = false;
 
 // 2) Campionamento temporizzato
@@ -44,11 +44,11 @@ const uint32_t BME_INTERVAL_MS = 1000; // 1 Hz
 uint32_t lastBmeRead = 0;
 
 // 3) Spike-guard (limita salti per campione)
-const float SPIKE_THRESHOLD_M = 3.0f;  // se il salto > 3 m rispetto al filtrato -> non credibile
-const float MAX_STEP_M        = 0.8f;  // massimo passo ammesso per campione (1s) quando fuori soglia
+const float SPIKE_THRESHOLD_M = 5.0f;  // se il salto > 3 m rispetto al filtrato -> non credibile
+const float MAX_STEP_M        = 2.0f;  // massimo passo ammesso per campione (1s) quando fuori soglia
 
 // 4) Finestra per mediana
-const uint8_t MEDIAN_N = 5;
+const uint8_t MEDIAN_N = 3;
 float relAltWindow[MEDIAN_N];
 uint8_t relAltIdx = 0;
 bool relAltFilled = false;
@@ -312,11 +312,12 @@ void setup() {
     bme.setSampling(
       Adafruit_BME280::MODE_NORMAL,
       Adafruit_BME280::SAMPLING_X2,   // temperatura
-      Adafruit_BME280::SAMPLING_X16,  // pressione: alto per ridurre rumore altitudine
+      Adafruit_BME280::SAMPLING_X8,   // pressione: buon compromesso velocità/rumore
       Adafruit_BME280::SAMPLING_X1,   // umidità
-      Adafruit_BME280::FILTER_X16,    // IIR forte contro spike
-      Adafruit_BME280::STANDBY_MS_500 // standby (coerente col nostro 1 Hz)
+      Adafruit_BME280::FILTER_X4,     // IIR meno “pesante” (meno ritardo)
+      Adafruit_BME280::STANDBY_MS_125 // standby più breve
     );
+
   } else {
     Serial.println("ATTENZIONE: BME280 non trovato!");
     bmeAvailable = false;
