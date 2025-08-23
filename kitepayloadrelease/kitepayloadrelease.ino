@@ -34,15 +34,30 @@ float g_relAltitude = 0;      // usata per decidere lo sgancio
 float g_maxRelAltitude = 0;
 float relAltUsedAtRelease = NAN; // quota usata al momento del rilascio
 
-// Filtro esponenziale (stabilizza l'altitudine relativa)
+// ======= Filtri =======
+// 1) Media esponenziale (smoothing finale)
 const float ALT_ALPHA = 0.3f; // 0<alpha<=1; 0.3 ~ buon compromesso
 bool altFilterInit = false;
+
+// 2) Campionamento temporizzato
+const uint32_t BME_INTERVAL_MS = 1000; // 1 Hz
+uint32_t lastBmeRead = 0;
+
+// 3) Spike-guard (limita salti per campione)
+const float SPIKE_THRESHOLD_M = 3.0f;  // se il salto > 3 m rispetto al filtrato -> non credibile
+const float MAX_STEP_M        = 0.8f;  // massimo passo ammesso per campione (1s) quando fuori soglia
+
+// 4) Finestra per mediana
+const uint8_t MEDIAN_N = 5;
+float relAltWindow[MEDIAN_N];
+uint8_t relAltIdx = 0;
+bool relAltFilled = false;
 
 // ======= Isteresi sgancio =======
 uint32_t aboveThresholdSince = 0;     // millis quando superiamo la soglia
 const uint32_t HYSTERESIS_MS = 1000;  // 1 secondo di conferma
 
-// ====================== EEPROM UTILS ======================
+// ---------------------- Utils: EEPROM ----------------------
 void saveSeaLevelPressure(float value) {
   EEPROM.begin(EEPROM_SIZE);
   byte* p = (byte*)(void*)&value;
@@ -76,7 +91,32 @@ float loadReleaseAltitude() {
   return value;
 }
 
-// ====================== SERVO ======================
+// ---------------------- Utils: Filtro ----------------------
+static float clamp(float x, float lo, float hi){ return x < lo ? lo : (x > hi ? hi : x); }
+
+float medianOfWindow() {
+  // copia i valori presenti nella finestra
+  uint8_t n = relAltFilled ? MEDIAN_N : relAltIdx;
+  if (n == 0) return g_relAltitude; // fallback
+  float tmp[MEDIAN_N];
+  for (uint8_t i = 0; i < n; i++) tmp[i] = relAltWindow[i];
+  // selection sort rapido (N=5)
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t minIdx = i;
+    for (uint8_t j = i + 1; j < n; j++) if (tmp[j] < tmp[minIdx]) minIdx = j;
+    float t = tmp[i]; tmp[i] = tmp[minIdx]; tmp[minIdx] = t;
+  }
+  // mediana
+  if (n & 1) return tmp[n/2];
+  return 0.5f * (tmp[n/2 - 1] + tmp[n/2]);
+}
+
+void pushWindow(float v) {
+  relAltWindow[relAltIdx++] = v;
+  if (relAltIdx >= MEDIAN_N) { relAltIdx = 0; relAltFilled = true; }
+}
+
+// ---------------------- SERVO ----------------------
 void RELEASE() {
   Serial.println("Rilascio (RELEASE)");
   myservo.write(180);
@@ -84,7 +124,7 @@ void RELEASE() {
   myservo.write(0);
 }
 
-// ====================== WEB UI ======================
+// ---------------------- WEB UI ----------------------
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
@@ -96,9 +136,9 @@ void handleRoot() {
   html += ".header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}";
   html += ".title{font-size:20px;font-weight:700;letter-spacing:.3px}";
   html += ".status{padding:10px 14px;border-radius:10px;color:#fff;font-weight:700;min-width:220px;text-align:center;}";
-  html += ".status.ok{background:#22c55e;}";      // verde
-  html += ".status.bad{background:#ef4444;}";    // rosso
-  html += ".grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px;}"; // 2 colonne SEMPRE
+  html += ".status.ok{background:#22c55e;}";
+  html += ".status.bad{background:#ef4444;}";
+  html += ".grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px;}";
   html += ".card{background:#f9fafb;border:1px solid #e5e7eb;box-shadow:0 2px 6px rgba(0,0,0,0.08);border-radius:12px;padding:16px 16px 14px}";
   html += ".label{color:#6b7280;font-size:12px;letter-spacing:.5px;text-transform:uppercase}";
   html += ".value{color:#111827;font-weight:800;font-size:26px;line-height:1.1;margin-top:6px}";
@@ -120,7 +160,7 @@ void handleRoot() {
   html += "function aggiorna(){fetch('/data').then(r=>r.json()).then(d=>{";
   html += "document.getElementById('temp').textContent=d.temperatura.toFixed(1);";
   html += "document.getElementById('hum').textContent=d.umidita.toFixed(1);";
-  html += "document.getElementById('press').textContent=d.pressione.toFixed(1);";
+  html += "document.getElementById('press').textContent=d.pressione.toFixed(2);";
   html += "document.getElementById('alt').textContent=d.altitudine.toFixed(1);";
   html += "document.getElementById('relAlt').textContent=d.altRel.toFixed(1);";
   html += "document.getElementById('maxAlt').textContent=d.altMax.toFixed(1);";
@@ -183,7 +223,7 @@ void handleData() {
   String json = "{";
   json += "\"temperatura\":" + String(g_temperature, 1) + ",";
   json += "\"umidita\":" + String(g_humidity, 1) + ",";
-  json += "\"pressione\":" + String(g_pressure, 1) + ",";
+  json += "\"pressione\":" + String(g_pressure, 2) + ",";
   json += "\"altitudine\":" + String(g_altitude, 1) + ",";
   json += "\"altRel\":" + String(g_relAltitude, 1) + ",";
   json += "\"altMax\":" + String(g_maxRelAltitude, 1) + ",";
@@ -242,6 +282,8 @@ void handleResetRelease() {
   relAltUsedAtRelease = NAN;
   altFilterInit = false;      // il filtro riparte dal prossimo campione
   aboveThresholdSince = 0;    // azzera isteresi
+  relAltIdx = 0;              // reset finestra mediana
+  relAltFilled = false;
 
   Serial.println("Altitudine relativa, massima e stato sgancio resettati");
   server.sendHeader("Location", "/", true);
@@ -265,6 +307,16 @@ void setup() {
   if (bme.begin(0x76) || bme.begin(0x77)) {
     bmeAvailable = true;
     Serial.println("BME280 trovato!");
+
+    // ===== Configura oversampling + filtro IIR interni (antirumore hardware) =====
+    bme.setSampling(
+      Adafruit_BME280::MODE_NORMAL,
+      Adafruit_BME280::SAMPLING_X2,   // temperatura
+      Adafruit_BME280::SAMPLING_X16,  // pressione: alto per ridurre rumore altitudine
+      Adafruit_BME280::SAMPLING_X1,   // umidità
+      Adafruit_BME280::FILTER_X16,    // IIR forte contro spike
+      Adafruit_BME280::STANDBY_MS_500 // standby (coerente col nostro 1 Hz)
+    );
   } else {
     Serial.println("ATTENZIONE: BME280 non trovato!");
     bmeAvailable = false;
@@ -281,6 +333,9 @@ void setup() {
     g_relAltitude = g_altitude - baseAltitude;
     g_maxRelAltitude = g_relAltitude;
     altFilterInit = true; // inizializza filtro
+    // inizializza finestra mediana con il valore corrente
+    for (uint8_t i=0;i<MEDIAN_N;i++) relAltWindow[i] = g_relAltitude;
+    relAltIdx = 0; relAltFilled = true;
   }
 
   WiFi.softAP(ssid, password);
@@ -301,51 +356,69 @@ void loop() {
   server.handleClient();
 
   if (bmeAvailable) {
-    // Letture BME
-    float temperature = bme.readTemperature();
-    float humidity    = bme.readHumidity();
-    float pressure    = bme.readPressure() / 100.0F;
-    float altitude    = bme.readAltitude(seaLevelPressure_hpa);
+    uint32_t now = millis();
+    if (now - lastBmeRead >= BME_INTERVAL_MS) {
+      lastBmeRead = now;
 
-    // Altitudine relativa grezza
-    float relAltRaw = altitude - baseAltitude;
+      // Letture BME (già con oversampling + IIR)
+      float temperature = bme.readTemperature();
+      float humidity    = bme.readHumidity();
+      float pressure    = bme.readPressure() / 100.0F;
+      float altitude    = bme.readAltitude(seaLevelPressure_hpa);
 
-    // Filtro per stabilizzare
-    if (!altFilterInit) {
-      g_relAltitude = relAltRaw;
-      altFilterInit = true;
-    } else {
-      g_relAltitude = (1.0f - ALT_ALPHA) * g_relAltitude + ALT_ALPHA * relAltRaw;
-    }
+      // Altitudine relativa grezza
+      float relAltRaw = altitude - baseAltitude;
 
-    // Aggiorna cache condivisa
-    g_temperature = temperature;
-    g_humidity    = humidity;
-    g_pressure    = pressure;
-    g_altitude    = altitude;
-
-    if (g_relAltitude > g_maxRelAltitude) g_maxRelAltitude = g_relAltitude;
-
-    // ===== Logica di sgancio con isteresi =====
-    if (!payloadReleased && releaseAltitude > 0) {
-      if (g_relAltitude >= releaseAltitude) {
-        if (aboveThresholdSince == 0) {
-          aboveThresholdSince = millis(); // appena superata la soglia
-        } else if (millis() - aboveThresholdSince >= HYSTERESIS_MS) {
-          Serial.printf("Quota di sgancio confermata (relAlt = %.2f m per >= %u ms). Rilascio...\n",
-                        g_relAltitude, HYSTERESIS_MS);
-          relAltUsedAtRelease = g_relAltitude;
-          RELEASE();
-          payloadReleased = true;
+      // --- Spike-guard (clamp rispetto all'ultimo filtrato) ---
+      float candidate = relAltRaw;
+      if (altFilterInit) {
+        float delta = candidate - g_relAltitude;
+        if (fabs(delta) > SPIKE_THRESHOLD_M) {
+          // salto eccessivo -> limita il passo massimo ammesso
+          candidate = g_relAltitude + (delta > 0 ? MAX_STEP_M : -MAX_STEP_M);
         }
+      }
+
+      // --- Mediana su 5 campioni (rimuove outlier singoli) ---
+      pushWindow(candidate);
+      float med = medianOfWindow();
+
+      // --- EMA finale (ALT_ALPHA) ---
+      if (!altFilterInit) {
+        g_relAltitude = med;
+        altFilterInit = true;
       } else {
-        // scesi sotto soglia → annulla finestra di conferma
-        aboveThresholdSince = 0;
+        g_relAltitude = (1.0f - ALT_ALPHA) * g_relAltitude + ALT_ALPHA * med;
+      }
+
+      // Aggiorna cache condivisa
+      g_temperature = temperature;
+      g_humidity    = humidity;
+      g_pressure    = pressure;
+      g_altitude    = altitude;
+
+      if (g_relAltitude > g_maxRelAltitude) g_maxRelAltitude = g_relAltitude;
+
+      // ===== Logica di sgancio con isteresi =====
+      if (!payloadReleased && releaseAltitude > 0) {
+        if (g_relAltitude >= releaseAltitude) {
+          if (aboveThresholdSince == 0) {
+            aboveThresholdSince = now; // appena superata la soglia
+          } else if (now - aboveThresholdSince >= HYSTERESIS_MS) {
+            Serial.printf("Quota di sgancio confermata (relAlt = %.2f m per >= %u ms). Rilascio...\n",
+                          g_relAltitude, HYSTERESIS_MS);
+            relAltUsedAtRelease = g_relAltitude;
+            RELEASE();
+            payloadReleased = true;
+          }
+        } else {
+          // scesi sotto soglia → annulla finestra di conferma
+          aboveThresholdSince = 0;
+        }
       }
     }
   }
 
-  // Se vuoi ridurre il calore: puoi portare a delay(100..1000).
-  // delay(1) mantiene l'interfaccia più reattiva.
+  // yield
   delay(1);
 }
