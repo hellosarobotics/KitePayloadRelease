@@ -8,6 +8,7 @@ Sistema per il rilascio automatico (o manuale) di un payload agganciato a un aqu
 |---|---|
 | `kitepayloadrelease/` | Firmware principale per **ESP8266** (Arduino, `.ino`) |
 | `kitepayloadrelease-ESP32-C3/` | Variante del firmware per **ESP32-C3** |
+| `kiteAltitude/` | Sistema di telemetria altimetrica via **LoRa** (nodo TX su aquilone + RX a terra) — vedi `kiteAltitude/README.md` |
 | `fritzing/` | Schema elettrico/cablaggio (progetto Fritzing) |
 | `3DModel/` | Modello 3D del meccanismo di sgancio a servo |
 | `cardboardBox/` | Disegno (SVG) della scatola che racchiude l'elettronica |
@@ -64,3 +65,16 @@ Il rilascio è puramente meccanico: il servo (collegato al pin `D5`) viene porta
 Se il BME280 non viene rilevato all'avvio (indirizzi I²C `0x76`/`0x77`), il firmware continua a funzionare: l'access point e il server web restano attivi e lo sgancio manuale resta disponibile, ma la logica di sgancio automatico basata sull'altitudine è disabilitata e l'interfaccia mostra un avviso.
 
 > La variante in `kitepayloadrelease-ESP32-C3/` adatta lo stesso firmware alla scheda ESP32-C3.
+
+## Telemetria altimetrica via LoRa (`kiteAltitude/`)
+
+Progetto separato dal rilascio: due nodi **ESP32-C3 Super Mini** con modulo radio **SX1276 (LoRa 868 MHz)** che si scambiano solo l'altitudine dell'aquilone, senza alcun meccanismo di sgancio.
+
+- **`kiteAltitude/kiteAltitudeTX`** (sull'aquilone, a batteria LiPo, nessun Wi-Fi/BLE per risparmiare peso e consumo): legge il BME280, applica la stessa catena di filtro del progetto di rilascio (spike-guard + mediana-3 + EMA) all'altitudine e trasmette un pacchetto di 15 byte (quota relativa, temperatura, batteria, sequenza) a un intervallo parametrico (default 1 volta al secondo).
+- **`kiteAltitude/kiteAltitudeRX`** (stazione di terra, alimentata via USB): riceve i pacchetti via interrupt, calcola la velocità verticale e rileva quando l'aquilone, dopo essere stato stabile a una quota (plateau), inizia a scendere oltre una soglia impostabile. Espone un access point Wi-Fi proprio (`KiteAltitudeRX`) con una pagina che mostra altitudine, temperatura, velocità verticale, stato del link e batteria del TX, e che riproduce un **tono stile variometro** (pitch e ripetizione del beep modulati dal rateo di discesa) mentre l'allarme è attivo.
+
+Documentazione hardware completa (BOM, piedinatura, cablaggio, parametri radio): `kiteAltitude/README.md`.
+
+Librerie richieste (Arduino Library Manager): `RadioLib`, `Adafruit BME280 Library` (+ `Adafruit Unified Sensor`). Parametri radio e piedinatura SPI/I2C sono definiti in `PacketFormat.h`, presente identico in entrambe le sottocartelle: se lo si modifica va aggiornato in entrambe.
+
+⚠️ La frequenza (869.525 MHz, sotto-banda EU868 "h1.5") e la potenza sono scelte per rientrare nei limiti di duty-cycle tipici della normativa ERC/ETSI, ma è responsabilità di chi trasmette verificarne l'applicabilità attuale in Italia prima dell'uso.
