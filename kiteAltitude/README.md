@@ -28,17 +28,21 @@ Sistema a due nodi, separato dal progetto di rilascio: un nodo **TX** sull'aquil
 
 I pin di strapping dell'ESP32-C3 sono **GPIO2, GPIO8, GPIO9**. L'I2C eredita lo schema già validato nel progetto di rilascio esistente (`Wire.begin(8,9)`): sicuro perché le pull-up I2C tengono le linee alte già in fase di boot. **GPIO2 viene lasciato libero** deliberatamente: a differenza dell'I2C, un `RST`/`DIO0` di un modulo radio esterno potrebbe plausibilmente andare basso proprio all'accensione, prima che il firmware lo configuri — non è un rischio da correre per un pin di strapping.
 
-| Segnale | GPIO | Nodo |
-|---|---|---|
-| SX1276 SCK | 4 | TX + RX |
-| SX1276 MISO | 5 | TX + RX |
-| SX1276 MOSI | 6 | TX + RX |
-| SX1276 NSS/CS | 7 | TX + RX |
-| SX1276 RST | 10 | TX + RX |
-| SX1276 DIO0 (IRQ) | 1 | TX + RX |
-| BME280 SDA | 8 | solo TX |
-| BME280 SCL | 9 | solo TX |
-| Partitore batteria (ADC) | 3 | solo TX |
+| Segnale | GPIO | Nodo | Colore cavo (convenzione) |
+|---|---|---|---|
+| SX1276 SCK | 4 | TX + RX | Bianco/Verde |
+| SX1276 MISO | 5 | TX + RX | Verde |
+| SX1276 MOSI | 6 | TX + RX | Blu |
+| SX1276 NSS/CS | 7 | TX + RX | Arancione |
+| SX1276 RST | 10 | TX + RX | Bianco/Arancione |
+| SX1276 DIO0 (IRQ) | 1 | TX + RX | Bianco/Blu |
+| BME280 SDA | 8 | solo TX | Blu |
+| BME280 SCL | 9 | solo TX | Giallo |
+| Partitore batteria (ADC) | 3 | solo TX | Grigio |
+| VCC (3V3) | — | TX + RX | Marrone |
+| GND | — | TX + RX | Bianco/Marrone |
+
+⚠️ Colori indicati solo come convenzione di cablaggio interna a questo progetto, per facilitare l'assemblaggio: non esiste uno standard elettronico universale per SCK/MISO/MOSI/CS/RST/IRQ (a differenza di rosso=VCC e nero=GND, quelli sì diffusi quasi ovunque). Il riferimento univoco resta il numero di GPIO in tabella, non il colore del filo usato.
 
 Definiti come `#define` in `kiteAltitudeTX/PacketFormat.h` e `kiteAltitudeRX/PacketFormat.h` (file identico nelle due cartelle).
 
