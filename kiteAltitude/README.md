@@ -4,7 +4,7 @@ Sistema a due nodi, separato dal progetto di rilascio: un nodo **TX** sull'aquil
 
 ## 1. Panoramica
 
-- **`kiteAltitudeTX/`**: nodo headless (nessun Wi-Fi/BLE/WebServer) a batteria, montato sull'aquilone. Legge il BME280 a intervallo parametrico (1 Hz di default, vedi §5bis), applica la stessa catena di filtro del progetto di rilascio esistente (spike-guard → mediana-3 → EMA) all'altitudine, e trasmette un pacchetto di 15 byte con altitudine relativa + temperatura via LoRa.
+- **`kiteAltitudeTX/`**: nodo headless (nessun Wi-Fi/BLE/WebServer) a batteria, montato sull'aquilone. Legge il BME280 a intervallo parametrico (1 pacchetto ogni 2s di default, vedi §5bis), applica la stessa catena di filtro del progetto di rilascio esistente (spike-guard → mediana-3 → EMA) all'altitudine, e trasmette un pacchetto di 15 byte con altitudine relativa + temperatura via LoRa.
 - **`kiteAltitudeRX/`**: stazione di terra, alimentata via USB. Riceve i pacchetti a interrupt, calcola la velocità verticale, rileva quando l'aquilone — dopo essere stato stabile a una quota (plateau) — inizia a scendere oltre una soglia, ed espone tutto su una pagina web (AP Wi-Fi `KiteAltitudeRX`, altitudine + temperatura + velocità verticale) con un tono stile variometro generato via Web Audio API.
 
 ## 2. Bill of Materials
@@ -72,13 +72,13 @@ Devono essere **identici, testualmente**, nelle chiamate `radio.begin(...)` di T
 | Sync word | `0x12` (privata, diversa dalla `0x34` pubblica LoRaWAN) |
 | Potenza | +14 dBm |
 | Preambolo | 8 simboli |
-| Cadenza TX | parametrica, default 1 pacchetto/s (vedi §5bis) — a 1/s: ~46 ms di airtime → duty cycle ~4.6%, sotto il limite ~10% della sotto-banda h1.5 |
+| Cadenza TX | parametrica, default 1 pacchetto ogni 2s (vedi §5bis) — a 1/2s: ~46 ms di airtime → duty cycle ~2.3%, sotto il limite ~10% della sotto-banda h1.5 |
 
 ⚠️ Verificare la normativa italiana/ERC attuale per questa sotto-banda prima di trasmettere davvero — è responsabilità di chi usa il sistema, non qualcosa dato per assodato da questa documentazione.
 
 ## 5bis. Intervallo di campionamento/trasmissione (parametrico)
 
-`SAMPLE_INTERVAL_MS` in cima a `kiteAltitudeTX.ino` è l'unica costante da cambiare per campionare/trasmettere ogni 2s, 3s, ecc. invece che ogni 1s (default 1000). È una costante di compilazione — per cambiarla serve riflashare il TX, non è regolabile a runtime: il link radio è solo TX→RX, e costruire un canale di configurazione bidirezionale via LoRa solo per questo non sarebbe giustificato.
+`SAMPLE_INTERVAL_MS` in cima a `kiteAltitudeTX.ino` è l'unica costante da cambiare per campionare/trasmettere ogni 1s, 3s, ecc. invece che ogni 2s (default 2000). È una costante di compilazione — per cambiarla serve riflashare il TX, non è regolabile a runtime: il link radio è solo TX→RX, e costruire un canale di configurazione bidirezionale via LoRa solo per questo non sarebbe giustificato.
 
 Cosa succede cambiandolo:
 
@@ -86,11 +86,11 @@ Cosa succede cambiandolo:
 - **Svantaggio principale — allarme più lento**: l'RX calcola il rateo di discesa sul tempo reale tra i pacchetti (non assume 1 Hz), quindi non si "rompe" nulla, ma con un intervallo più lungo la stima del rateo arriva con più ritardo, in proporzione. Per un aquilone che scende rapidamente, un allarme più lento è l'esatto contrario di quello che serve.
 - **Filtro TX auto-scalato**: lo spike-guard e il passo massimo per campione sono espressi come rateo (m/s, `MAX_CLIMB_RATE_MPS`/`SPIKE_RATE_MPS`) e moltiplicati per l'intervallo, quindi restano corretti a qualunque valore si scelga. Anche l'EMA è derivata da una costante di tempo fissa (`ALT_TIME_CONSTANT_S`) invece che da un alpha fisso, così la sua reattività reale (in secondi) non cambia cambiando l'intervallo — a 1000ms il comportamento è identico alla versione originale a 1 Hz.
 - **Da ritarare manualmente sull'RX**: `plateauHoldMs` e `linkTimeoutMs` (impostabili dal form web, non richiedono reflash) presuppongono per default ~1 pacchetto/s. Se si allunga l'intervallo sul TX, vanno aumentati proporzionalmente sull'RX — altrimenti, ad esempio, il plateau potrebbe confermarsi dopo un solo pacchetto invece che dopo diversi secondi di stabilità reale, o il link potrebbe sembrare "perso" dopo la sola normale attesa tra due pacchetti.
-- **Mediana più lenta in termini reali**: la finestra a 3 campioni (`MEDIAN_N`) dura `3 × SAMPLE_INTERVAL_MS` in tempo reale — a 1s sono 3s (attuale), a 3s diventano 9s di finestra, che si somma al ritardo dell'EMA. Non è "sbagliato", ma aggiunge latenza percepita al valore di altitudine mostrato.
+- **Mediana più lenta in termini reali**: la finestra a 3 campioni (`MEDIAN_N`) dura `3 × SAMPLE_INTERVAL_MS` in tempo reale — a 2s sono 6s (attuale), a 3s diventano 9s di finestra, che si somma al ritardo dell'EMA. Non è "sbagliato", ma aggiunge latenza percepita al valore di altitudine mostrato.
 
 ## 6. Alimentazione/potenza (TX)
 
-Il TX resta sempre acceso con campionamento continuo a 1 Hz (Wi-Fi/BLE mai inizializzati, radio LoRa messa in `sleep()` tra una trasmissione e la successiva) invece di usare il deep-sleep dell'ESP32-C3. Motivo: il deep-sleep interromperebbe la continuità dei campioni di cui l'RX ha bisogno per calcolare vario/plateau, e richiederebbe salvare lo stato del filtro in RTC memory — complessità non necessaria per la v1, dato che il consumo stimato (~28–30 mA medi) dà già 5–10+ ore su una LiPo 150–300 mAh, ben oltre una sessione di volo tipica. Da rivalutare come ottimizzazione futura solo se servirà più autonomia.
+Il TX resta sempre acceso con campionamento continuo a intervallo fisso (default ogni 2s, Wi-Fi/BLE mai inizializzati, radio LoRa messa in `sleep()` tra una trasmissione e la successiva) invece di usare il deep-sleep dell'ESP32-C3. Motivo: il deep-sleep interromperebbe la continuità dei campioni di cui l'RX ha bisogno per calcolare vario/plateau, e richiederebbe salvare lo stato del filtro in RTC memory — complessità non necessaria per la v1, dato che il consumo stimato (~28–30 mA medi) dà già 5–10+ ore su una LiPo 150–300 mAh, ben oltre una sessione di volo tipica. Da rivalutare come ottimizzazione futura solo se servirà più autonomia.
 
 ## 7. Librerie richieste (Arduino Library Manager)
 
@@ -103,8 +103,8 @@ Il TX resta sempre acceso con campionamento continuo a 1 Hz (Wi-Fi/BLE mai inizi
 1. **Test banco base**: accendere entrambe le schede vicine, caricare la pagina RX su `http://192.168.4.1/` (IP di default dell'AP), verificare che `/data` si popoli, `seq` cresca e `linkOk` sia `true`.
 2. **Test con `SIMULATE_ALTITUDE` attivo** (il più utile): decommentare `#define SIMULATE_ALTITUDE` in `kiteAltitudeTX.ino` e riflashare il TX — genera una rampa ciclica (salita 0→20m/20s, plateau 10s, discesa ~3m/s/7s, plateau 5s). Verificare che il plateau si confermi nei tempi previsti, l'allarme scatti alla soglia di discesa attesa, la velocità verticale segua il rateo scriptato, il tono cambi pitch/beep-rate di conseguenza, e l'allarme si azzeri al recupero. Ricordarsi di ricompilare senza la macro prima del volo.
 3. **Test fisico opzionale**: portare il nodo TX (senza `SIMULATE_ALTITUDE`) su/giù per una scala; il BME280 registra davvero qualche hPa di variazione, per una verifica end-to-end indipendente dalla simulazione.
-4. **Test perdita link**: spegnere o allontanare il TX; verificare che dopo `linkTimeoutMs` (default 5s) la UI passi allo stato rosso "LINK PERSO" e un eventuale tono attivo si interrompa subito.
+4. **Test perdita link**: spegnere o allontanare il TX; verificare che dopo `linkTimeoutMs` (default 10s) la UI passi allo stato rosso "LINK PERSO" e un eventuale tono attivo si interrompa subito.
 5. **Sblocco audio**: ricaricare la pagina con un allarme già attivo lato server; verificare che non parta alcun suono finché non si clicca "Attiva audio" (policy autoplay del browser).
 6. **Persistenza impostazioni**: modificare le soglie dal form "Impostazioni allarme discesa", riavviare l'RX, verificare che i valori restino salvati (EEPROM) e che il comportamento le rispetti.
-7. **Controllo airtime/duty-cycle**: leggere sul Serial del TX i timestamp di trasmissione; confermare cadenza ~1/s e airtime coerente con la stima (~46ms), per validare il calcolo di duty-cycle del §5.
+7. **Controllo airtime/duty-cycle**: leggere sul Serial del TX i timestamp di trasmissione; confermare cadenza ~1 pacchetto ogni 2s e airtime coerente con la stima (~46ms), per validare il calcolo di duty-cycle del §5.
 8. **Pre-check di portata all'aperto** (senza `SIMULATE_ALTITUDE`): allontanare il TX dall'RX osservando RSSI/SNR nella card diagnostica della pagina, prima di fidarsi in volo.

@@ -39,7 +39,7 @@
 // identico alla versione originale a 1 Hz). Aumentarlo riduce il duty-cycle radio e il consumo
 // batteria, ma rende più lenta la reazione dell'allarme di discesa sull'RX (che calcola il
 // rateo di discesa sul tempo reale tra i pacchetti: più pacchetti radi = stima più tardiva).
-static const uint32_t SAMPLE_INTERVAL_MS = 1000;
+static const uint32_t SAMPLE_INTERVAL_MS = 2000;
 
 // ======= Costanti filtro altitudine (identiche in spirito a kitepayloadrelease-ESP32-C3.ino,
 // ma espresse come rateo così restano valide indipendentemente da SAMPLE_INTERVAL_MS) =======

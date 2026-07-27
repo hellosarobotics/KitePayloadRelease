@@ -29,8 +29,8 @@ SX1276 radio = new Module(LORA_CS_PIN, LORA_DIO0_PIN, LORA_RST_PIN, RADIOLIB_NC)
 #define EEPROM_SIZE 16
 float plateauToleranceM = 1.0f; // [0.1, 10.0]  m di tolleranza per considerare "stabile" la quota
 float descentTriggerM   = 3.0f; // [0.5, 50.0]  m di calo dal plateau che fa scattare l'allarme
-float plateauHoldMs     = 4000; // [500, 30000] ms di stabilità richiesti per confermare il plateau
-float linkTimeoutMs     = 5000; // [1000, 60000] ms senza pacchetti prima di dichiarare il link perso
+float plateauHoldMs     = 8000;  // [500, 30000] ms di stabilità richiesti per confermare il plateau
+float linkTimeoutMs     = 10000; // [1000, 60000] ms senza pacchetti prima di dichiarare il link perso
 
 // ======= Stato ricezione LoRa =======
 volatile bool packetFlag = false;
@@ -38,6 +38,7 @@ void setFlag() { packetFlag = true; }
 
 bool lastSeqValid = false;
 uint16_t lastSeq = 0;
+uint32_t lastTxUptimeMs = 0;
 uint32_t packetsReceived = 0;
 uint32_t packetsLostEst = 0;
 uint32_t lastPacketMs = 0;
@@ -160,10 +161,18 @@ void handleRoot() {
   html += ".btn,.btn-ghost{appearance:none;border:none;cursor:pointer;border-radius:10px;padding:10px 14px;font-weight:700}";
   html += ".btn{color:#fff;background:#3b82f6} .btn:hover{background:#2563eb}";
   html += ".btn-ghost{background:#fff;border:1px solid #d1d5db;color:#111827} .btn-ghost:hover{background:#f3f4f6}";
-  html += "form{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}";
+  html += "form{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-top:12px}";
   html += "input[type=number]{background:#fff;border:1px solid #d1d5db;color:#111827;border-radius:8px;padding:8px 10px;min-width:110px}";
   html += "input[type=submit]{border:none;border-radius:8px;padding:10px 14px;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}";
   html += "input[type=submit]:hover{background:#2563eb}";
+  html += ".setting{display:flex;flex-direction:column;gap:4px;flex:1 1 220px;min-width:220px}";
+  html += ".setting .name{font-weight:600;font-size:13px}";
+  html += ".setting .sub{margin-top:0}";
+  html += ".qual{font-size:13px;font-weight:700;padding:2px 9px;border-radius:6px;margin-left:8px;vertical-align:middle}";
+  html += ".qual.ottimo{background:#dcfce7;color:#15803d}";
+  html += ".qual.buono{background:#dbeafe;color:#1d4ed8}";
+  html += ".qual.scarso{background:#fef3c7;color:#b45309}";
+  html += ".qual.critico{background:#fee2e2;color:#b91c1c}";
   html += "</style>";
 
   html += "<script>";
@@ -192,6 +201,14 @@ void handleRoot() {
   html += "osc.frequency.setTargetAtTime(freq,audioCtx.currentTime,0.05);";
   html += "if(!beepActive){beepActive=true;beepLoop();}}";
 
+  // --- Qualità link da RSSI/SNR: prende il peggiore dei due giudizi (un solo numero buono
+  // non basta se l'altro è scarso) ---
+  html += "function linkQuality(rssi,snr){";
+  html += "var r=rssi>=-80?3:rssi>=-100?2:rssi>=-115?1:0;";
+  html += "var s=snr>=5?3:snr>=0?2:snr>=-10?1:0;";
+  html += "var lvl=Math.min(r,s);";
+  html += "return [['Critico','critico'],['Scarso','scarso'],['Buono','buono'],['Ottimo','ottimo']][lvl];}";
+
   // --- Polling dati ---
   html += "function aggiorna(){fetch('/data').then(r=>r.json()).then(d=>{";
   html += "document.getElementById('relAlt').textContent=d.altitude.toFixed(1);";
@@ -201,6 +218,7 @@ void handleRoot() {
   html += "document.getElementById('battV').textContent=(d.batteryMv/1000).toFixed(2);";
   html += "document.getElementById('rssi').textContent=d.rssi.toFixed(1);";
   html += "document.getElementById('snr').textContent=d.snr.toFixed(1);";
+  html += "var q=linkQuality(d.rssi,d.snr);var qe=document.getElementById('linkQual');qe.textContent=q[0];qe.className='qual '+q[1];";
   html += "document.getElementById('seq').textContent=d.seq;";
   html += "document.getElementById('lost').textContent=d.packetsLostEst;";
   html += "document.getElementById('age').textContent=(d.msSinceLastPacket/1000).toFixed(1);";
@@ -226,9 +244,9 @@ void handleRoot() {
   html += "    <div class='card'><div class='label'>Altitudine relativa</div><div class='value'><span id='relAlt'>--</span><span class='unit'>m</span></div></div>";
   html += "    <div class='card'><div class='label'>Temperatura</div><div class='value'><span id='temp'>--</span><span class='unit'>&deg;C</span></div></div>";
   html += "    <div class='card'><div class='label'>Velocità verticale</div><div class='value'><span id='vspeed'>--</span><span class='unit'>m/s</span></div></div>";
-  html += "    <div class='card'><div class='label'>Quota plateau</div><div class='value'><span id='plateauAlt'>--</span><span class='unit'>m</span></div></div>";
+  html += "    <div class='card'><div class='label'>Quota plateau</div><div class='value'><span id='plateauAlt'>--</span><span class='unit'>m</span></div><div class='sub'>Quota a cui l'aquilone si è stabilizzato abbastanza a lungo da fare da riferimento: se poi scende oltre la soglia impostata rispetto a questo valore, scatta l'allarme di discesa. Resta '--' finché la stabilità richiesta non è confermata.</div></div>";
   html += "    <div class='card'><div class='label'>Batteria TX</div><div class='value'><span id='battV'>--</span><span class='unit'>V</span></div></div>";
-  html += "    <div class='card'><div class='label'>Link (RSSI / SNR)</div><div class='value'><span id='rssi'>--</span><span class='unit'>dBm</span> / <span id='snr'>--</span><span class='unit'>dB</span></div></div>";
+  html += "    <div class='card'><div class='label'>Link (RSSI / SNR)</div><div class='value'><span id='rssi'>--</span><span class='unit'>dBm</span> / <span id='snr'>--</span><span class='unit'>dB</span><span id='linkQual' class='qual'>--</span></div><div class='sub'>Ottimo &ge;-80dBm e &ge;5dB &middot; Buono &ge;-100dBm e &ge;0dB &middot; Scarso &ge;-115dBm e &ge;-10dB &middot; sotto: Critico</div></div>";
   html += "    <div class='card'><div class='label'>Pacchetti (seq / persi)</div><div class='value'><span id='seq'>--</span> / <span id='lost'>--</span></div></div>";
   html += "    <div class='card' style='grid-column:1/-1'><div class='label'>Ultimo pacchetto ricevuto</div><div class='value'><span id='age'>--</span><span class='unit'>s fa</span></div></div>";
   html += "    <div class='card'><div class='label'>Temperatura CPU RX</div><div class='value'><span id='cpuTempRX'>--</span><span class='unit'>&deg;C</span></div></div>";
@@ -237,14 +255,26 @@ void handleRoot() {
   html += "  <div class='card' style='margin-top:14px'>";
   html += "    <div class='label'>Impostazioni allarme discesa</div>";
   html += "    <form action='/setSettings' method='POST'>";
-  html += "      <span class='sub' style='min-width:150px;display:inline-block'>Tolleranza plateau (m)</span>";
-  html += "      <input type='number' step='0.1' name='tol' value='" + String(plateauToleranceM, 1) + "'>";
-  html += "      <span class='sub' style='min-width:150px;display:inline-block'>Tempo di stabilità (s)</span>";
-  html += "      <input type='number' step='1' name='hold' value='" + String(plateauHoldMs / 1000.0f, 0) + "'>";
-  html += "      <span class='sub' style='min-width:150px;display:inline-block'>Soglia di discesa (m)</span>";
-  html += "      <input type='number' step='0.1' name='trig' value='" + String(descentTriggerM, 1) + "'>";
-  html += "      <span class='sub' style='min-width:150px;display:inline-block'>Timeout link (s)</span>";
-  html += "      <input type='number' step='1' name='linktimeout' value='" + String(linkTimeoutMs / 1000.0f, 0) + "'>";
+  html += "      <div class='setting'>";
+  html += "        <span class='name'>Tolleranza plateau (m)</span>";
+  html += "        <span class='sub'>Quanto può oscillare la quota restando comunque considerata \"stabile\". Più bassa = plateau più sensibile alle piccole variazioni.</span>";
+  html += "        <input type='number' step='0.1' name='tol' value='" + String(plateauToleranceM, 1) + "'>";
+  html += "      </div>";
+  html += "      <div class='setting'>";
+  html += "        <span class='name'>Tempo di stabilità (s)</span>";
+  html += "        <span class='sub'>Per quanto tempo la quota deve restare dentro la tolleranza prima che il plateau venga confermato come riferimento.</span>";
+  html += "        <input type='number' step='1' name='hold' value='" + String(plateauHoldMs / 1000.0f, 0) + "'>";
+  html += "      </div>";
+  html += "      <div class='setting'>";
+  html += "        <span class='name'>Soglia di discesa (m)</span>";
+  html += "        <span class='sub'>Di quanti metri sotto il plateau confermato l'aquilone deve scendere prima che scatti l'allarme.</span>";
+  html += "        <input type='number' step='0.1' name='trig' value='" + String(descentTriggerM, 1) + "'>";
+  html += "      </div>";
+  html += "      <div class='setting'>";
+  html += "        <span class='name'>Timeout link (s)</span>";
+  html += "        <span class='sub'>Se non arriva nessun pacchetto dal TX per più di questo tempo, il link è considerato perso (stato rosso) e l'allarme si azzera.</span>";
+  html += "        <input type='number' step='1' name='linktimeout' value='" + String(linkTimeoutMs / 1000.0f, 0) + "'>";
+  html += "      </div>";
   html += "      <input type='submit' value='Salva'>";
   html += "    </form>";
   html += "    <div class='row'>";
@@ -319,8 +349,8 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   plateauToleranceM = loadFloatAt(0, 0.1f, 10.0f, 1.0f);
   descentTriggerM   = loadFloatAt(4, 0.5f, 50.0f, 3.0f);
-  plateauHoldMs     = loadFloatAt(8, 500.0f, 30000.0f, 4000.0f);
-  linkTimeoutMs     = loadFloatAt(12, 1000.0f, 60000.0f, 5000.0f);
+  plateauHoldMs     = loadFloatAt(8, 500.0f, 30000.0f, 8000.0f);
+  linkTimeoutMs     = loadFloatAt(12, 1000.0f, 60000.0f, 10000.0f);
 
   SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_CS_PIN);
   int state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ, LORA_SPREADING_FACTOR,
@@ -364,13 +394,17 @@ void loop() {
       int state = radio.readData((uint8_t*)&pkt, len);
       if (state == RADIOLIB_ERR_NONE && pkt.magic == PACKET_MAGIC) {
         uint32_t now = millis();
-        if (lastSeqValid) {
-          // nota: se il TX si riavvia (seq torna vicino a 0) questo conteggio si gonfia
-          // una volta, per via del wraparound: è solo un contatore diagnostico, non critico.
+        // Se il TX si riavvia, il suo millis() (txUptimeMs) torna a un valore basso: è un
+        // segnale inequivocabile di riavvio, a differenza del solo seq (che potrebbe anche
+        // sembrare un wraparound normale). In quel caso non contiamo il gap come persi:
+        // sono pacchetti mai esistiti, non pacchetti persi in aria.
+        bool txRestarted = lastSeqValid && (pkt.txUptimeMs < lastTxUptimeMs);
+        if (lastSeqValid && !txRestarted) {
           uint16_t gap = (uint16_t)(pkt.seq - lastSeq - 1);
           packetsLostEst += gap;
         }
         lastSeq = pkt.seq; lastSeqValid = true;
+        lastTxUptimeMs = pkt.txUptimeMs;
         packetsReceived++;
         lastPacketMs = now;
         g_rssi = radio.getRSSI();
