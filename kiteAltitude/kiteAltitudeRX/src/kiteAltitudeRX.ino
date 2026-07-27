@@ -10,6 +10,7 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <EEPROM.h>
 #include <SPI.h>
 #include <RadioLib.h>
@@ -18,8 +19,10 @@
 // ======= Wi-Fi AP =======
 const char* ssid = "KiteAltitudeRX";
 const char* password = "12345678";
+const byte DNS_PORT = 53;
 
 WebServer server(80);
+DNSServer dnsServer;
 SX1276 radio = new Module(LORA_CS_PIN, LORA_DIO0_PIN, LORA_RST_PIN, RADIOLIB_NC);
 
 // ======= EEPROM: 4 float, 16 byte =======
@@ -42,6 +45,11 @@ float g_altitude = 0;
 float g_temperature = 0;
 float g_batteryMv = 0;
 float g_rssi = 0, g_snr = 0;
+
+// ======= Temperatura CPU RX: campionata 1x/s + EMA (il sensore interno ha step di ~1°C) =======
+float g_cpuTempRX = 0;
+bool cpuTempRXInit = false;
+uint32_t lastCpuTempMs = 0;
 
 // ======= Velocità verticale: finestra di 4 campioni + EMA =======
 #define VSPEED_WINDOW 4
@@ -196,6 +204,7 @@ void handleRoot() {
   html += "document.getElementById('seq').textContent=d.seq;";
   html += "document.getElementById('lost').textContent=d.packetsLostEst;";
   html += "document.getElementById('age').textContent=(d.msSinceLastPacket/1000).toFixed(1);";
+  html += "document.getElementById('cpuTempRX').textContent=d.cpuTempRX.toFixed(1);";
   html += "var s=document.getElementById('status');";
   html += "if(!d.linkOk){s.className='status bad';s.textContent='LINK PERSO';setThemeColor('#ef4444');}";
   html += "else if(d.sinkAlarm){s.className='status warn';s.textContent='ALLARME DISCESA';setThemeColor('#f59e0b');}";
@@ -203,7 +212,7 @@ void handleRoot() {
   html += "updateTone(d.linkOk&&d.sinkAlarm,d.vSpeed);";
   html += "}).catch(()=>{});}";
 
-  html += "setInterval(aggiorna,500); window.onload=aggiorna;";
+  html += "setInterval(aggiorna,1000); window.onload=aggiorna;";
   html += "</script></head><body>";
 
   html += "<div class='container'>";
@@ -222,6 +231,7 @@ void handleRoot() {
   html += "    <div class='card'><div class='label'>Link (RSSI / SNR)</div><div class='value'><span id='rssi'>--</span><span class='unit'>dBm</span> / <span id='snr'>--</span><span class='unit'>dB</span></div></div>";
   html += "    <div class='card'><div class='label'>Pacchetti (seq / persi)</div><div class='value'><span id='seq'>--</span> / <span id='lost'>--</span></div></div>";
   html += "    <div class='card' style='grid-column:1/-1'><div class='label'>Ultimo pacchetto ricevuto</div><div class='value'><span id='age'>--</span><span class='unit'>s fa</span></div></div>";
+  html += "    <div class='card'><div class='label'>Temperatura CPU RX</div><div class='value'><span id='cpuTempRX'>--</span><span class='unit'>&deg;C</span></div></div>";
   html += "  </div>";
 
   html += "  <div class='card' style='margin-top:14px'>";
@@ -265,7 +275,8 @@ void handleData() {
   json += "\"packetsLostEst\":" + String(packetsLostEst) + ",";
   json += "\"plateauAltitude\":" + String(plateauAltitude, 2) + ",";
   json += "\"plateauConfirmed\":" + String(plateauConfirmed ? "true" : "false") + ",";
-  json += "\"sinkAlarm\":" + String((sinkAlarm && linkOk) ? "true" : "false");
+  json += "\"sinkAlarm\":" + String((sinkAlarm && linkOk) ? "true" : "false") + ",";
+  json += "\"cpuTempRX\":" + String(g_cpuTempRX, 1);
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -301,6 +312,10 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // Riduce il riscaldamento del SoC in AP mode continuo: 80MHz è il minimo supportato
+  // col Wi-Fi attivo, ma è ampiamente sufficiente per il carico di questo sketch.
+  setCpuFrequencyMhz(80);
+
   EEPROM.begin(EEPROM_SIZE);
   plateauToleranceM = loadFloatAt(0, 0.1f, 10.0f, 1.0f);
   descentTriggerM   = loadFloatAt(4, 0.5f, 50.0f, 3.0f);
@@ -318,18 +333,27 @@ void setup() {
   radio.startReceive();
 
   WiFi.softAP(ssid, password);
+  // Potenza TX ridotta: l'AP serve un telefono a pochi metri, non serve la potenza RF massima
+  // di default (che è una delle cause principali del riscaldamento del SoC in AP continuo).
+  WiFi.setTxPower(WIFI_POWER_5dBm);
   Serial.print("Access Point creato. IP: ");
   Serial.println(WiFi.softAPIP());
+
+  // Captive portal: redirige tutte le risoluzioni DNS all'IP dell'AP, così i sistemi operativi
+  // (Android/iOS/Windows) rilevano una rete "con login" e aprono la pagina da soli.
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
 
   server.on("/", handleRoot);
   server.on("/data", handleData);
   server.on("/setSettings", HTTP_POST, handleSetSettings);
   server.on("/resetAlarm", handleResetAlarm);
+  server.onNotFound(handleRoot); // qualunque URL di probe del captive portal serve comunque la pagina
   server.begin();
   Serial.println("Server web avviato");
 }
 
 void loop() {
+  dnsServer.processNextRequest();
   server.handleClient();
 
   if (packetFlag) {
@@ -357,6 +381,8 @@ void loop() {
 
         pushVSpeedSample(now, g_altitude);
         updatePlateauAndAlarm(now, g_altitude);
+
+        Serial.printf("Temperatura: %.1f C\n", g_temperature);
       }
     }
     radio.startReceive();
@@ -364,4 +390,19 @@ void loop() {
 
   bool linkOk = (lastPacketMs != 0) && (millis() - lastPacketMs < (uint32_t)linkTimeoutMs);
   if (!linkOk) sinkAlarm = false; // dato stantio non deve mai far suonare l'allarme
+
+  uint32_t nowMs = millis();
+  if (nowMs - lastCpuTempMs >= 1000) {
+    lastCpuTempMs = nowMs;
+    float raw = temperatureRead();
+    g_cpuTempRX = cpuTempRXInit ? (g_cpuTempRX * 0.7f + raw * 0.3f) : raw;
+    cpuTempRXInit = true;
+  }
+
+  // Il TX manda ~1 pacchetto/s e la pagina web fa polling ogni 1s: un loop a 250Hz (delay 2ms)
+  // è molto più veloce del necessario e tiene la CPU sveglia inutilmente, scaldando il SoC
+  // anche senza nessun client Wi-Fi connesso. 20ms (50Hz) lascia comunque ampio margine sia
+  // per la ricezione LoRa (il pacchetto resta nel buffer finché non lo si legge) sia per la
+  // reattività percepita dell'AP/captive portal.
+  delay(20);
 }
