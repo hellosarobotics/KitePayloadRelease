@@ -63,7 +63,9 @@ uint8_t vsCount = 0;
 float g_vSpeed = 0;
 
 // ======= Storico per i grafici web: buffer circolare lato RX, così un reload della pagina
-// (che azzererebbe uno storico tenuto solo nel browser) non perde i dati dall'accensione del TX.
+// (che azzererebbe uno storico tenuto solo nel browser) non perde i dati dall'accensione
+// dell'RX. Tempi in millis() dell'RX (non del TX): un riavvio della stazione di terra azzera
+// sia il buffer sia il tempo mostrato nei grafici, a prescindere da quanto è acceso il TX.
 // Campionato a parte dal rateo di invio del TX, all'intervallo configurabile historySampleMs:
 // con l'impostazione di default (10s) 1800 campioni coprono circa 5 ore (costano ~28KB fissi
 // di RAM, ampiamente sostenibili sull'ESP32-C3). =======
@@ -270,18 +272,20 @@ void handleRoot() {
   html += "var lvl=Math.min(r,s);";
   html += "return [['Scarso','scarso'],['Scarso','scarso'],['Buono','buono'],['Ottimo','ottimo']][lvl];}";
 
-  // --- Grafici storico (altitudine/temperatura/umidità nel tempo dall'accensione del TX) ---
+  // --- Grafici storico (altitudine/temperatura/umidità nel tempo dall'accensione dell'RX) ---
   // hist viene ripopolato da /history al caricamento pagina (buffer autoritativo tenuto
   // dall'RX) e poi accodato qui coi nuovi punti dal polling /data: stesso rateo di
   // campionamento di 10s dell'RX, così il grafico resta uniforme dallo storico alla coda live.
+  // L'asse dei tempi è legato all'uptime dell'RX (non del TX): un riavvio della stazione di
+  // terra azzera sia il buffer sia il tempo mostrato, indipendentemente da quanto è acceso il TX.
   html += "var CH_MAX=1800;";
   html += "var HIST_SAMPLE_MS=" + String(historySampleMs, 0) + ";";
   html += "var hist={t:[],alt:[],temp:[],hum:[]};";
   html += "var lastHistT=-1;";
   html += "function pushHistory(d){";
-  html += "if(lastHistT>=0&&d.txUptimeMs-lastHistT<HIST_SAMPLE_MS)return;";
-  html += "lastHistT=d.txUptimeMs;";
-  html += "hist.t.push(d.txUptimeMs/1000);hist.alt.push(d.altitude);hist.temp.push(d.temperature);hist.hum.push(d.humidity);";
+  html += "if(lastHistT>=0&&d.elapsedMs-lastHistT<HIST_SAMPLE_MS)return;";
+  html += "lastHistT=d.elapsedMs;";
+  html += "hist.t.push(d.elapsedMs/1000);hist.alt.push(d.altitude);hist.temp.push(d.temperature);hist.hum.push(d.humidity);";
   html += "if(hist.t.length>CH_MAX){hist.t.shift();hist.alt.shift();hist.temp.shift();hist.hum.shift();}}";
 
   html += "function fmtElapsed(s){s=Math.max(0,Math.round(s));";
@@ -467,7 +471,7 @@ void handleData() {
   json += "\"plateauConfirmed\":" + String(plateauConfirmed ? "true" : "false") + ",";
   json += "\"sinkAlarm\":" + String((sinkAlarm && linkOk) ? "true" : "false") + ",";
   json += "\"cpuTempRX\":" + String(g_cpuTempRX, 1) + ",";
-  json += "\"txUptimeMs\":" + String(lastTxUptimeMs);
+  json += "\"elapsedMs\":" + String(now);
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -615,7 +619,7 @@ void loop() {
         pushVSpeedSample(now, g_altitude);
         updatePlateauAndAlarm(now, g_altitude);
         if (!historyStarted || (now - lastHistPushMs) >= (uint32_t)historySampleMs) {
-          pushHistorySample(pkt.txUptimeMs, g_altitude, g_temperature, g_humidity);
+          pushHistorySample(now, g_altitude, g_temperature, g_humidity);
           lastHistPushMs = now;
           historyStarted = true;
         }
