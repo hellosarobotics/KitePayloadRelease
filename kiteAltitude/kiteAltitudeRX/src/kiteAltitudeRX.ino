@@ -61,6 +61,31 @@ uint8_t vsIdx = 0;
 uint8_t vsCount = 0;
 float g_vSpeed = 0;
 
+// ======= Storico per i grafici web: buffer circolare lato RX, così un reload della pagina
+// (che azzererebbe uno storico tenuto solo nel browser) non perde i dati dall'accensione del TX.
+// Campionato a parte dal rateo di invio del TX: un punto ogni HISTORY_SAMPLE_INTERVAL_MS è
+// più che sufficiente per grafici di tendenza, e 1800 campioni a 10s coprono circa 5 ore
+// (costano ~28KB fissi di RAM, ampiamente sostenibili sull'ESP32-C3). =======
+#define HISTORY_CAPACITY 1800
+#define HISTORY_SAMPLE_INTERVAL_MS 10000
+uint32_t histT[HISTORY_CAPACITY];
+float histAlt[HISTORY_CAPACITY];
+float histTemp[HISTORY_CAPACITY];
+float histHum[HISTORY_CAPACITY];
+uint16_t histCount = 0;
+uint16_t histHead = 0;
+uint32_t lastHistPushMs = 0;
+bool historyStarted = false;
+
+void pushHistorySample(uint32_t t, float alt, float temp, float hum) {
+  histT[histHead] = t;
+  histAlt[histHead] = alt;
+  histTemp[histHead] = temp;
+  histHum[histHead] = hum;
+  histHead = (histHead + 1) % HISTORY_CAPACITY;
+  if (histCount < HISTORY_CAPACITY) histCount++;
+}
+
 // ======= Stato plateau / allarme discesa =======
 float plateauAltitude = 0;
 uint32_t plateauStableSinceMs = 0;
@@ -181,6 +206,8 @@ void handleRoot() {
   html += ".qual.ottimo{background:#dcfce7;color:#15803d}";
   html += ".qual.buono{background:#dbeafe;color:#1d4ed8}";
   html += ".qual.scarso{background:#fee2e2;color:#b91c1c}";
+  html += "canvas.chart{width:100%;height:160px;display:block;touch-action:pan-y}";
+  html += ".chart-hover{font-size:12px;color:#6b7280;margin-top:6px;min-height:16px}";
   html += "</style>";
 
   html += "<script>";
@@ -217,6 +244,68 @@ void handleRoot() {
   html += "var lvl=Math.min(r,s);";
   html += "return [['Scarso','scarso'],['Scarso','scarso'],['Buono','buono'],['Ottimo','ottimo']][lvl];}";
 
+  // --- Grafici storico (altitudine/temperatura/umidità nel tempo dall'accensione del TX) ---
+  // hist viene ripopolato da /history al caricamento pagina (buffer autoritativo tenuto
+  // dall'RX) e poi accodato qui coi nuovi punti dal polling /data: stesso rateo di
+  // campionamento di 10s dell'RX, così il grafico resta uniforme dallo storico alla coda live.
+  html += "var CH_MAX=1800;";
+  html += "var HIST_SAMPLE_MS=10000;";
+  html += "var hist={t:[],alt:[],temp:[],hum:[]};";
+  html += "var lastHistT=-1;";
+  html += "function pushHistory(d){";
+  html += "if(lastHistT>=0&&d.txUptimeMs-lastHistT<HIST_SAMPLE_MS)return;";
+  html += "lastHistT=d.txUptimeMs;";
+  html += "hist.t.push(d.txUptimeMs/1000);hist.alt.push(d.altitude);hist.temp.push(d.temperature);hist.hum.push(d.humidity);";
+  html += "if(hist.t.length>CH_MAX){hist.t.shift();hist.alt.shift();hist.temp.shift();hist.hum.shift();}}";
+
+  html += "function fmtElapsed(s){s=Math.max(0,Math.round(s));";
+  html += "var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;";
+  html += "var mm=(h>0?String(m).padStart(2,'0'):String(m));";
+  html += "return (h>0?h+':':'')+mm+':'+String(sec).padStart(2,'0');}";
+
+  html += "function drawChart(canvas,xs,ys,color,unit,decimals){";
+  html += "var dpr=window.devicePixelRatio||1;var w=canvas.clientWidth,h=canvas.clientHeight;";
+  html += "if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}";
+  html += "var ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);";
+  html += "var padL=38,padR=8,padT=10,padB=20;var plotW=w-padL-padR,plotH=h-padT-padB;";
+  html += "if(xs.length<2){ctx.fillStyle='#9ca3af';ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillText('In attesa di dati...',w/2,h/2);canvas._chartData=null;return;}";
+  html += "var minY=Math.min.apply(null,ys),maxY=Math.max.apply(null,ys);if(minY===maxY){minY-=1;maxY+=1;}";
+  html += "var pad=(maxY-minY)*0.1;minY-=pad;maxY+=pad;";
+  html += "var minX=xs[0],maxX=xs[xs.length-1];";
+  html += "function px(x){return padL+(x-minX)/((maxX-minX)||1)*plotW;}";
+  html += "function py(y){return padT+plotH-(y-minY)/(maxY-minY)*plotH;}";
+  html += "ctx.strokeStyle='#e5e7eb';ctx.lineWidth=1;ctx.fillStyle='#9ca3af';ctx.font='10px system-ui';ctx.textAlign='right';ctx.textBaseline='middle';";
+  html += "for(var i=0;i<=2;i++){var v=minY+(maxY-minY)*i/2;var yy=py(v);ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(w-padR,yy);ctx.stroke();ctx.fillText(v.toFixed(decimals),padL-6,yy);}";
+  html += "ctx.fillStyle='#9ca3af';ctx.textBaseline='alphabetic';ctx.textAlign='left';ctx.fillText(fmtElapsed(minX),padL,h-4);ctx.textAlign='right';ctx.fillText(fmtElapsed(maxX),w-padR,h-4);";
+  html += "ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();";
+  html += "for(var j=0;j<xs.length;j++){var X=px(xs[j]),Y=py(ys[j]);if(j===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);}ctx.stroke();";
+  html += "var lx=px(xs[xs.length-1]),ly=py(ys[ys.length-1]);ctx.fillStyle=color;ctx.beginPath();ctx.arc(lx,ly,3,0,2*Math.PI);ctx.fill();";
+  html += "canvas._chartData={xs:xs,ys:ys,minX:minX,maxX:maxX,padL:padL,plotW:plotW,unit:unit,decimals:decimals};}";
+
+  html += "function chartHoverHandler(canvas,hoverEl){";
+  html += "function handle(evt){var d=canvas._chartData;if(!d)return;";
+  html += "var rect=canvas.getBoundingClientRect();var clientX=evt.touches?evt.touches[0].clientX:evt.clientX;";
+  html += "var frac=(clientX-rect.left-d.padL)/d.plotW;frac=Math.max(0,Math.min(1,frac));";
+  html += "var xVal=d.minX+frac*(d.maxX-d.minX);var idx=0,best=Infinity;";
+  html += "for(var i=0;i<d.xs.length;i++){var diff=Math.abs(d.xs[i]-xVal);if(diff<best){best=diff;idx=i;}}";
+  html += "hoverEl.textContent='T+'+fmtElapsed(d.xs[idx])+' -> '+d.ys[idx].toFixed(d.decimals)+' '+d.unit;}";
+  html += "canvas.addEventListener('mousemove',handle);";
+  html += "canvas.addEventListener('touchmove',function(e){handle(e);e.preventDefault();},{passive:false});";
+  html += "canvas.addEventListener('mouseleave',function(){hoverEl.innerHTML='&nbsp;';});}";
+
+  html += "var chartsInited=false;";
+  html += "function initCharts(){if(chartsInited)return;chartsInited=true;";
+  html += "chartHoverHandler(document.getElementById('chartAlt'),document.getElementById('chartAltHover'));";
+  html += "chartHoverHandler(document.getElementById('chartTemp'),document.getElementById('chartTempHover'));";
+  html += "chartHoverHandler(document.getElementById('chartHum'),document.getElementById('chartHumHover'));}";
+
+  // Storico caricato una volta da /history (tenuto dall'RX): così un reload della pagina
+  // non fa ripartire i grafici da vuoto, a differenza di uno storico tenuto solo nel browser.
+  html += "function loadHistory(){return fetch('/history').then(r=>r.json()).then(data=>{";
+  html += "hist.t=data.t.map(function(v){return v/1000;});hist.alt=data.alt;hist.temp=data.temp;hist.hum=data.hum;";
+  html += "lastHistT=data.t.length?data.t[data.t.length-1]:-1;";
+  html += "}).catch(()=>{});}";
+
   // --- Polling dati ---
   html += "function aggiorna(){fetch('/data').then(r=>r.json()).then(d=>{";
   html += "document.getElementById('relAlt').textContent=d.altitude.toFixed(1);";
@@ -237,9 +326,13 @@ void handleRoot() {
   html += "else if(d.sinkAlarm){s.className='status warn';s.textContent='ALLARME DISCESA';setThemeColor('#f59e0b');}";
   html += "else{s.className='status ok';s.textContent='Link OK';setThemeColor('#22c55e');}";
   html += "updateTone(d.linkOk&&d.sinkAlarm,d.vSpeed);";
+  html += "if(d.linkOk)pushHistory(d);";
+  html += "drawChart(document.getElementById('chartAlt'),hist.t,hist.alt,'#3b82f6','m',1);";
+  html += "drawChart(document.getElementById('chartTemp'),hist.t,hist.temp,'#f97316','°C',1);";
+  html += "drawChart(document.getElementById('chartHum'),hist.t,hist.hum,'#06b6d4','%',1);";
   html += "}).catch(()=>{});}";
 
-  html += "setInterval(aggiorna,1000); window.onload=aggiorna;";
+  html += "setInterval(aggiorna,1000); window.onload=function(){initCharts();loadHistory().then(aggiorna);};";
   html += "</script></head><body>";
 
   html += "<div class='container'>";
@@ -309,6 +402,13 @@ void handleRoot() {
   html += "    </div>";
   html += "  </div>";
 
+  html += "  <div class='card' style='margin-top:14px'><div class='label'>Altitudine nel tempo</div>";
+  html += "    <canvas id='chartAlt' class='chart'></canvas><div class='chart-hover' id='chartAltHover'>&nbsp;</div></div>";
+  html += "  <div class='card' style='margin-top:14px'><div class='label'>Temperatura nel tempo</div>";
+  html += "    <canvas id='chartTemp' class='chart'></canvas><div class='chart-hover' id='chartTempHover'>&nbsp;</div></div>";
+  html += "  <div class='card' style='margin-top:14px'><div class='label'>Umidità nel tempo</div>";
+  html += "    <canvas id='chartHum' class='chart'></canvas><div class='chart-hover' id='chartHumHover'>&nbsp;</div></div>";
+
   html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
@@ -334,8 +434,40 @@ void handleData() {
   json += "\"plateauAltitude\":" + String(plateauAltitude, 2) + ",";
   json += "\"plateauConfirmed\":" + String(plateauConfirmed ? "true" : "false") + ",";
   json += "\"sinkAlarm\":" + String((sinkAlarm && linkOk) ? "true" : "false") + ",";
-  json += "\"cpuTempRX\":" + String(g_cpuTempRX, 1);
+  json += "\"cpuTempRX\":" + String(g_cpuTempRX, 1) + ",";
+  json += "\"txUptimeMs\":" + String(lastTxUptimeMs);
   json += "}";
+  server.send(200, "application/json", json);
+}
+
+// Storico completo per i grafici (chiamato una volta al caricamento pagina/reload, non in polling):
+// il browser lo usa per ripopolare i grafici, poi continua ad accodare i nuovi punti da /data.
+void handleHistory() {
+  uint16_t start = (histCount < HISTORY_CAPACITY) ? 0 : histHead;
+
+  String json;
+  json.reserve(24 + (size_t)histCount * 34);
+  json += "{\"t\":[";
+  for (uint16_t i = 0; i < histCount; i++) {
+    if (i) json += ",";
+    json += String(histT[(start + i) % HISTORY_CAPACITY]);
+  }
+  json += "],\"alt\":[";
+  for (uint16_t i = 0; i < histCount; i++) {
+    if (i) json += ",";
+    json += String(histAlt[(start + i) % HISTORY_CAPACITY], 2);
+  }
+  json += "],\"temp\":[";
+  for (uint16_t i = 0; i < histCount; i++) {
+    if (i) json += ",";
+    json += String(histTemp[(start + i) % HISTORY_CAPACITY], 1);
+  }
+  json += "],\"hum\":[";
+  for (uint16_t i = 0; i < histCount; i++) {
+    if (i) json += ",";
+    json += String(histHum[(start + i) % HISTORY_CAPACITY], 1);
+  }
+  json += "]}";
   server.send(200, "application/json", json);
 }
 
@@ -403,6 +535,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/data", handleData);
+  server.on("/history", handleHistory);
   server.on("/setSettings", HTTP_POST, handleSetSettings);
   server.on("/resetAlarm", handleResetAlarm);
   server.onNotFound(handleRoot); // qualunque URL di probe del captive portal serve comunque la pagina
@@ -444,6 +577,11 @@ void loop() {
 
         pushVSpeedSample(now, g_altitude);
         updatePlateauAndAlarm(now, g_altitude);
+        if (!historyStarted || (now - lastHistPushMs) >= HISTORY_SAMPLE_INTERVAL_MS) {
+          pushHistorySample(pkt.txUptimeMs, g_altitude, g_temperature, g_humidity);
+          lastHistPushMs = now;
+          historyStarted = true;
+        }
 
         Serial.printf("Temperatura: %.1f C\n", g_temperature);
       }
