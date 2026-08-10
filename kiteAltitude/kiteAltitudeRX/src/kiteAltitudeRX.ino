@@ -131,17 +131,27 @@ void pushVSpeedSample(uint32_t t, float alt) {
 
 // ---------------------- Macchina a stati: plateau + allarme discesa ----------------------
 void updatePlateauAndAlarm(uint32_t t, float alt) {
-  if (!plateauConfirmed || fabs(alt - plateauAltitude) <= plateauToleranceM) {
-    plateauAltitude = plateauAltitude * 0.8f + alt * 0.2f;
-    if (plateauStableSinceMs == 0) plateauStableSinceMs = t;
-    if (t - plateauStableSinceMs >= (uint32_t)plateauHoldMs) plateauConfirmed = true;
-  } else if (alt > plateauAltitude) {
-    // salita: nuovo candidato plateau più in alto
+  if (!plateauConfirmed) {
+    // Fase di ricerca: la quota candidata insegue l'altitudine con una EMA finché resta
+    // entro tolleranza, e viene confermata dopo plateauHoldMs di stabilità continua.
+    if (fabs(alt - plateauAltitude) <= plateauToleranceM) {
+      plateauAltitude = plateauAltitude * 0.8f + alt * 0.2f;
+      if (plateauStableSinceMs == 0) plateauStableSinceMs = t;
+      if (t - plateauStableSinceMs >= (uint32_t)plateauHoldMs) plateauConfirmed = true;
+    } else {
+      // si è mosso troppo per restare candidato: si ricomincia da qui
+      plateauAltitude = alt; plateauStableSinceMs = t;
+    }
+  } else if (alt > plateauAltitude + plateauToleranceM) {
+    // salita oltre tolleranza rispetto al plateau confermato: nuovo candidato più in alto
     plateauAltitude = alt; plateauStableSinceMs = t; plateauConfirmed = false;
   } else {
-    // sceso oltre la tolleranza rispetto al plateau
-    plateauStableSinceMs = t;
-    if (plateauConfirmed && (plateauAltitude - alt) > descentTriggerM) {
+    // Plateau confermato: da qui in poi resta fisso (non insegue più l'altitudine) finché
+    // non risale abbastanza da ridiventare candidato, o l'allarme scatta e poi recupera
+    // (vedi sotto). Così anche una discesa lenta, un campione alla volta entro tolleranza,
+    // accumula comunque lo scarto dal riferimento invece di "trascinarselo dietro" verso
+    // il basso senza mai far scattare l'allarme.
+    if ((plateauAltitude - alt) > descentTriggerM) {
       sinkAlarm = true;
     }
   }
