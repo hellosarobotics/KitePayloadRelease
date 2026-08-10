@@ -25,12 +25,13 @@ WebServer server(80);
 DNSServer dnsServer;
 SX1276 radio = new Module(LORA_CS_PIN, LORA_DIO0_PIN, LORA_RST_PIN, RADIOLIB_NC);
 
-// ======= EEPROM: 4 float, 16 byte =======
-#define EEPROM_SIZE 16
+// ======= EEPROM: 5 float, 20 byte =======
+#define EEPROM_SIZE 20
 float plateauToleranceM = 1.0f; // [0.1, 10.0]  m di tolleranza per considerare "stabile" la quota
 float descentTriggerM   = 3.0f; // [0.5, 50.0]  m di calo dal plateau che fa scattare l'allarme
 float plateauHoldMs     = 8000;  // [500, 30000] ms di stabilità richiesti per confermare il plateau
 float linkTimeoutMs     = 10000; // [1000, 60000] ms senza pacchetti prima di dichiarare il link perso
+float historySampleMs   = 10000; // [1000, 60000] ms tra un campione e l'altro nei grafici storici
 
 // ======= Stato ricezione LoRa =======
 volatile bool packetFlag = false;
@@ -63,11 +64,10 @@ float g_vSpeed = 0;
 
 // ======= Storico per i grafici web: buffer circolare lato RX, così un reload della pagina
 // (che azzererebbe uno storico tenuto solo nel browser) non perde i dati dall'accensione del TX.
-// Campionato a parte dal rateo di invio del TX: un punto ogni HISTORY_SAMPLE_INTERVAL_MS è
-// più che sufficiente per grafici di tendenza, e 1800 campioni a 10s coprono circa 5 ore
-// (costano ~28KB fissi di RAM, ampiamente sostenibili sull'ESP32-C3). =======
+// Campionato a parte dal rateo di invio del TX, all'intervallo configurabile historySampleMs:
+// con l'impostazione di default (10s) 1800 campioni coprono circa 5 ore (costano ~28KB fissi
+// di RAM, ampiamente sostenibili sull'ESP32-C3). =======
 #define HISTORY_CAPACITY 1800
-#define HISTORY_SAMPLE_INTERVAL_MS 10000
 uint32_t histT[HISTORY_CAPACITY];
 float histAlt[HISTORY_CAPACITY];
 float histTemp[HISTORY_CAPACITY];
@@ -249,7 +249,7 @@ void handleRoot() {
   // dall'RX) e poi accodato qui coi nuovi punti dal polling /data: stesso rateo di
   // campionamento di 10s dell'RX, così il grafico resta uniforme dallo storico alla coda live.
   html += "var CH_MAX=1800;";
-  html += "var HIST_SAMPLE_MS=10000;";
+  html += "var HIST_SAMPLE_MS=" + String(historySampleMs, 0) + ";";
   html += "var hist={t:[],alt:[],temp:[],hum:[]};";
   html += "var lastHistT=-1;";
   html += "function pushHistory(d){";
@@ -395,6 +395,11 @@ void handleRoot() {
   html += "        <span class='sub'>Se non arriva nessun pacchetto dal TX per più di questo tempo, il link è considerato perso (stato rosso) e l'allarme si azzera.</span>";
   html += "        <input type='number' step='1' name='linktimeout' value='" + String(linkTimeoutMs / 1000.0f, 0) + "'>";
   html += "      </div>";
+  html += "      <div class='setting'>";
+  html += "        <span class='name'>Campionamento grafici (s)</span>";
+  html += "        <span class='sub'>Ogni quanto viene salvato un punto nei grafici storici (altitudine/temperatura/umidità). Più basso = grafici più dettagliati ma storico più corto a parità di memoria.</span>";
+  html += "        <input type='number' step='1' name='histsample' value='" + String(historySampleMs / 1000.0f, 0) + "'>";
+  html += "      </div>";
   html += "      <input type='submit' value='Salva'>";
   html += "    </form>";
   html += "    <div class='row'>";
@@ -488,6 +493,10 @@ void handleSetSettings() {
     float ms = server.arg("linktimeout").toFloat() * 1000.0f;
     if (ms >= 1000.0f && ms <= 60000.0f) { linkTimeoutMs = ms; saveFloatAt(12, ms); }
   }
+  if (server.hasArg("histsample")) {
+    float ms = server.arg("histsample").toFloat() * 1000.0f;
+    if (ms >= 1000.0f && ms <= 60000.0f) { historySampleMs = ms; saveFloatAt(16, ms); }
+  }
   server.sendHeader("Location", "/", true);
   server.send(302, "text/plain", "");
 }
@@ -511,6 +520,7 @@ void setup() {
   descentTriggerM   = loadFloatAt(4, 0.5f, 50.0f, 3.0f);
   plateauHoldMs     = loadFloatAt(8, 500.0f, 30000.0f, 8000.0f);
   linkTimeoutMs     = loadFloatAt(12, 1000.0f, 60000.0f, 10000.0f);
+  historySampleMs   = loadFloatAt(16, 1000.0f, 60000.0f, 10000.0f);
 
   SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_CS_PIN);
   int state = radio.begin(LORA_FREQUENCY_MHZ, LORA_BANDWIDTH_KHZ, LORA_SPREADING_FACTOR,
@@ -577,7 +587,7 @@ void loop() {
 
         pushVSpeedSample(now, g_altitude);
         updatePlateauAndAlarm(now, g_altitude);
-        if (!historyStarted || (now - lastHistPushMs) >= HISTORY_SAMPLE_INTERVAL_MS) {
+        if (!historyStarted || (now - lastHistPushMs) >= (uint32_t)historySampleMs) {
           pushHistorySample(pkt.txUptimeMs, g_altitude, g_temperature, g_humidity);
           lastHistPushMs = now;
           historyStarted = true;
