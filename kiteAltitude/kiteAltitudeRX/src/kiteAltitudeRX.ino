@@ -241,6 +241,21 @@ void handleRoot() {
   html += "osc.frequency.setTargetAtTime(freq,audioCtx.currentTime,0.05);";
   html += "gainNode.gain.setTargetAtTime(0.15,audioCtx.currentTime,0.05);}";
 
+  // --- Doppio beep di conferma al raggiungimento della quota di stabilizzazione: oscillatori
+  // "usa e getta" separati dal tono continuo dell'allarme discesa (niente interferenza), tono
+  // acuto/positivo (880Hz) ben distinto dal tono grave e continuo dell'allarme (150-600Hz). ---
+  html += "function beepTone(startTime,dur){";
+  html += "var o=audioCtx.createOscillator(),g=audioCtx.createGain();o.frequency.value=880;";
+  html += "g.gain.setValueAtTime(0,startTime);g.gain.linearRampToValueAtTime(0.2,startTime+0.01);g.gain.linearRampToValueAtTime(0,startTime+dur);";
+  html += "o.connect(g);g.connect(audioCtx.destination);o.start(startTime);o.stop(startTime+dur+0.02);}";
+  html += "function playPlateauBeep(){if(!audioEnabled)return;var t0=audioCtx.currentTime;beepTone(t0,0.12);beepTone(t0+0.16,0.12);}";
+
+  html += "var plateauStateInited=false,lastPlateauConfirmed=false;";
+  html += "function checkPlateauReached(d){";
+  html += "if(!plateauStateInited){plateauStateInited=true;lastPlateauConfirmed=d.plateauConfirmed;return;}";
+  html += "if(d.linkOk&&d.plateauConfirmed&&!lastPlateauConfirmed)playPlateauBeep();";
+  html += "lastPlateauConfirmed=d.plateauConfirmed;}";
+
   // --- Qualità link da RSSI/SNR: prende il peggiore dei due giudizi (un solo numero buono
   // non basta se l'altro è scarso) ---
   html += "function linkQuality(rssi,snr){";
@@ -331,6 +346,7 @@ void handleRoot() {
   html += "else if(d.sinkAlarm){s.className='status warn';s.textContent='ALLARME DISCESA';setThemeColor('#f59e0b');}";
   html += "else{s.className='status ok';s.textContent='Link OK';setThemeColor('#22c55e');}";
   html += "updateTone(d.linkOk&&d.sinkAlarm,d.vSpeed);";
+  html += "checkPlateauReached(d);";
   html += "if(d.linkOk)pushHistory(d);";
   html += "drawChart(document.getElementById('chartAlt'),hist.t,hist.alt,'#3b82f6','m',1);";
   html += "drawChart(document.getElementById('chartTemp'),hist.t,hist.temp,'#f97316','°C',1);";
