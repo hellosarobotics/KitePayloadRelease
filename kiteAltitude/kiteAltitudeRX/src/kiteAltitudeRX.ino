@@ -44,6 +44,7 @@ uint32_t packetsLostEst = 0;
 uint32_t lastPacketMs = 0;
 float g_altitude = 0;
 float g_temperature = 0;
+float g_humidity = 0;
 float g_batteryMv = 0;
 float g_rssi = 0, g_snr = 0;
 
@@ -151,12 +152,20 @@ void handleRoot() {
   html += ".status.ok{background:#22c55e;}";
   html += ".status.warn{background:#f59e0b;}";
   html += ".status.bad{background:#ef4444;}";
-  html += ".grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px;}";
+  html += ".stack{display:flex;flex-direction:column;gap:14px;margin-top:14px;}";
   html += ".card{background:#f9fafb;border:1px solid #e5e7eb;box-shadow:0 2px 6px rgba(0,0,0,0.08);border-radius:12px;padding:16px 16px 14px}";
+  html += ".metrics{display:flex;gap:24px;flex-wrap:wrap}";
+  html += ".metric{flex:1 1 140px;min-width:140px}";
   html += ".label{color:#6b7280;font-size:12px;letter-spacing:.5px;text-transform:uppercase}";
   html += ".value{color:#111827;font-weight:800;font-size:26px;line-height:1.1;margin-top:6px}";
   html += ".unit{opacity:.65;font-weight:600;font-size:16px;margin-left:6px}";
   html += ".sub{color:#6b7280;font-size:12px;margin-top:8px}";
+  html += "details.link-details{margin-top:8px}";
+  html += "details.link-details summary{cursor:pointer;color:#3b82f6;font-size:12px;font-weight:600;list-style:none}";
+  html += "details.link-details summary::-webkit-details-marker{display:none}";
+  html += "details.link-details summary:before{content:'▸ ';}";
+  html += "details.link-details[open] summary:before{content:'▾ ';}";
+  html += "details.link-details .sub{margin-top:6px}";
   html += ".row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}";
   html += ".btn,.btn-ghost{appearance:none;border:none;cursor:pointer;border-radius:10px;padding:10px 14px;font-weight:700}";
   html += ".btn{color:#fff;background:#3b82f6} .btn:hover{background:#2563eb}";
@@ -171,8 +180,7 @@ void handleRoot() {
   html += ".qual{font-size:13px;font-weight:700;padding:2px 9px;border-radius:6px;margin-left:8px;vertical-align:middle}";
   html += ".qual.ottimo{background:#dcfce7;color:#15803d}";
   html += ".qual.buono{background:#dbeafe;color:#1d4ed8}";
-  html += ".qual.scarso{background:#fef3c7;color:#b45309}";
-  html += ".qual.critico{background:#fee2e2;color:#b91c1c}";
+  html += ".qual.scarso{background:#fee2e2;color:#b91c1c}";
   html += "</style>";
 
   html += "<script>";
@@ -207,19 +215,20 @@ void handleRoot() {
   html += "var r=rssi>=-80?3:rssi>=-100?2:rssi>=-115?1:0;";
   html += "var s=snr>=5?3:snr>=0?2:snr>=-10?1:0;";
   html += "var lvl=Math.min(r,s);";
-  html += "return [['Critico','critico'],['Scarso','scarso'],['Buono','buono'],['Ottimo','ottimo']][lvl];}";
+  html += "return [['Scarso','scarso'],['Scarso','scarso'],['Buono','buono'],['Ottimo','ottimo']][lvl];}";
 
   // --- Polling dati ---
   html += "function aggiorna(){fetch('/data').then(r=>r.json()).then(d=>{";
   html += "document.getElementById('relAlt').textContent=d.altitude.toFixed(1);";
-  html += "document.getElementById('temp').textContent=d.temperature.toFixed(1);";
   html += "document.getElementById('vspeed').textContent=(d.vSpeed>=0?'+':'')+d.vSpeed.toFixed(2);";
   html += "document.getElementById('plateauAlt').textContent=d.plateauConfirmed?d.plateauAltitude.toFixed(1):'--';";
+  html += "document.getElementById('temp').textContent=d.temperature.toFixed(1);";
+  html += "document.getElementById('humidity').textContent=d.humidity.toFixed(1);";
   html += "document.getElementById('battV').textContent=(d.batteryMv/1000).toFixed(2);";
   html += "document.getElementById('rssi').textContent=d.rssi.toFixed(1);";
   html += "document.getElementById('snr').textContent=d.snr.toFixed(1);";
   html += "var q=linkQuality(d.rssi,d.snr);var qe=document.getElementById('linkQual');qe.textContent=q[0];qe.className='qual '+q[1];";
-  html += "document.getElementById('seq').textContent=d.seq;";
+  html += "document.getElementById('pktRecv').textContent=d.packetsReceived;";
   html += "document.getElementById('lost').textContent=d.packetsLostEst;";
   html += "document.getElementById('age').textContent=(d.msSinceLastPacket/1000).toFixed(1);";
   html += "document.getElementById('cpuTempRX').textContent=d.cpuTempRX.toFixed(1);";
@@ -240,34 +249,52 @@ void handleRoot() {
   html += "    <div id='status' class='status'>--</div>";
   html += "  </div>";
 
-  html += "  <div class='grid'>";
-  html += "    <div class='card'><div class='label'>Altitudine relativa</div><div class='value'><span id='relAlt'>--</span><span class='unit'>m</span></div></div>";
-  html += "    <div class='card'><div class='label'>Temperatura</div><div class='value'><span id='temp'>--</span><span class='unit'>&deg;C</span></div></div>";
-  html += "    <div class='card'><div class='label'>Velocità verticale</div><div class='value'><span id='vspeed'>--</span><span class='unit'>m/s</span></div></div>";
-  html += "    <div class='card'><div class='label'>Quota plateau</div><div class='value'><span id='plateauAlt'>--</span><span class='unit'>m</span></div><div class='sub'>Quota a cui l'aquilone si è stabilizzato abbastanza a lungo da fare da riferimento: se poi scende oltre la soglia impostata rispetto a questo valore, scatta l'allarme di discesa. Resta '--' finché la stabilità richiesta non è confermata.</div></div>";
-  html += "    <div class='card'><div class='label'>Batteria TX</div><div class='value'><span id='battV'>--</span><span class='unit'>V</span></div></div>";
-  html += "    <div class='card'><div class='label'>Link (RSSI / SNR)</div><div class='value'><span id='rssi'>--</span><span class='unit'>dBm</span> / <span id='snr'>--</span><span class='unit'>dB</span><span id='linkQual' class='qual'>--</span></div><div class='sub'>Ottimo &ge;-80dBm e &ge;5dB &middot; Buono &ge;-100dBm e &ge;0dB &middot; Scarso &ge;-115dBm e &ge;-10dB &middot; sotto: Critico</div></div>";
-  html += "    <div class='card'><div class='label'>Pacchetti (seq / persi)</div><div class='value'><span id='seq'>--</span> / <span id='lost'>--</span></div></div>";
-  html += "    <div class='card' style='grid-column:1/-1'><div class='label'>Ultimo pacchetto ricevuto</div><div class='value'><span id='age'>--</span><span class='unit'>s fa</span></div></div>";
+  html += "  <div class='stack'>";
+
+  html += "    <div class='card'><div class='metrics'>";
+  html += "      <div class='metric'><div class='label'>Altitudine relativa</div><div class='value'><span id='relAlt'>--</span><span class='unit'>m</span></div></div>";
+  html += "      <div class='metric'><div class='label'>Velocità verticale</div><div class='value'><span id='vspeed'>--</span><span class='unit'>m/s</span></div></div>";
+  html += "    </div></div>";
+
+  html += "    <div class='card'><div class='label'>Quota di stabilizzazione</div><div class='value'><span id='plateauAlt'>--</span><span class='unit'>m</span></div><div class='sub'>Quota a cui l'aquilone si è stabilizzato abbastanza a lungo da fare da riferimento: se poi scende oltre la soglia impostata rispetto a questo valore, scatta l'allarme di discesa. Resta '--' finché la stabilità richiesta non è confermata.</div></div>";
+
+  html += "    <div class='card'><div class='metrics'>";
+  html += "      <div class='metric'><div class='label'>Temperatura</div><div class='value'><span id='temp'>--</span><span class='unit'>&deg;C</span></div></div>";
+  html += "      <div class='metric'><div class='label'>Umidità</div><div class='value'><span id='humidity'>--</span><span class='unit'>%</span></div></div>";
+  html += "    </div></div>";
+
+  html += "    <div class='card'><div class='metrics'>";
+  html += "      <div class='metric'><div class='label'>Batteria TX</div><div class='value'><span id='battV'>--</span><span class='unit'>V</span></div></div>";
+  html += "      <div class='metric'><div class='label'>Link</div><div class='value'><span id='linkQual' class='qual'>--</span></div>";
+  html += "        <details class='link-details'><summary>Dettagli RSSI/SNR</summary><div class='sub'>RSSI: <span id='rssi'>--</span> dBm &middot; SNR: <span id='snr'>--</span> dB<br>Ottimo &ge;-80dBm e &ge;5dB &middot; Buono &ge;-100dBm e &ge;0dB &middot; sotto: Scarso</div></details>";
+  html += "      </div>";
+  html += "    </div></div>";
+
+  html += "    <div class='card'><div class='metrics'>";
+  html += "      <div class='metric'><div class='label'>Pacchetti (ricevuti / persi)</div><div class='value'><span id='pktRecv'>--</span> / <span id='lost'>--</span></div></div>";
+  html += "      <div class='metric'><div class='label'>Ultimo pacchetto ricevuto</div><div class='value'><span id='age'>--</span><span class='unit'>s fa</span></div></div>";
+  html += "    </div></div>";
+
   html += "    <div class='card'><div class='label'>Temperatura CPU RX</div><div class='value'><span id='cpuTempRX'>--</span><span class='unit'>&deg;C</span></div></div>";
+
   html += "  </div>";
 
   html += "  <div class='card' style='margin-top:14px'>";
   html += "    <div class='label'>Impostazioni allarme discesa</div>";
   html += "    <form action='/setSettings' method='POST'>";
   html += "      <div class='setting'>";
-  html += "        <span class='name'>Tolleranza plateau (m)</span>";
-  html += "        <span class='sub'>Quanto può oscillare la quota restando comunque considerata \"stabile\". Più bassa = plateau più sensibile alle piccole variazioni.</span>";
+  html += "        <span class='name'>Tolleranza quota di stabilizzazione (m)</span>";
+  html += "        <span class='sub'>Quanto può oscillare la quota restando comunque considerata \"stabile\". Più bassa = quota di stabilizzazione più sensibile alle piccole variazioni.</span>";
   html += "        <input type='number' step='0.1' name='tol' value='" + String(plateauToleranceM, 1) + "'>";
   html += "      </div>";
   html += "      <div class='setting'>";
   html += "        <span class='name'>Tempo di stabilità (s)</span>";
-  html += "        <span class='sub'>Per quanto tempo la quota deve restare dentro la tolleranza prima che il plateau venga confermato come riferimento.</span>";
+  html += "        <span class='sub'>Per quanto tempo la quota deve restare dentro la tolleranza prima che la quota di stabilizzazione venga confermata come riferimento.</span>";
   html += "        <input type='number' step='1' name='hold' value='" + String(plateauHoldMs / 1000.0f, 0) + "'>";
   html += "      </div>";
   html += "      <div class='setting'>";
   html += "        <span class='name'>Soglia di discesa (m)</span>";
-  html += "        <span class='sub'>Di quanti metri sotto il plateau confermato l'aquilone deve scendere prima che scatti l'allarme.</span>";
+  html += "        <span class='sub'>Di quanti metri sotto la quota di stabilizzazione confermata l'aquilone deve scendere prima che scatti l'allarme.</span>";
   html += "        <input type='number' step='0.1' name='trig' value='" + String(descentTriggerM, 1) + "'>";
   html += "      </div>";
   html += "      <div class='setting'>";
@@ -294,6 +321,7 @@ void handleData() {
   String json = "{";
   json += "\"altitude\":" + String(g_altitude, 2) + ",";
   json += "\"temperature\":" + String(g_temperature, 1) + ",";
+  json += "\"humidity\":" + String(g_humidity, 1) + ",";
   json += "\"vSpeed\":" + String(g_vSpeed, 2) + ",";
   json += "\"seq\":" + String(lastSeq) + ",";
   json += "\"rssi\":" + String(g_rssi, 1) + ",";
@@ -412,6 +440,7 @@ void loop() {
         g_batteryMv = pkt.batteryMv;
         g_altitude = pkt.relAltitude_mm / 1000.0f;
         g_temperature = pkt.temperature_c10 / 10.0f;
+        g_humidity = pkt.humidity_pct10 / 10.0f;
 
         pushVSpeedSample(now, g_altitude);
         updatePlateauAndAlarm(now, g_altitude);

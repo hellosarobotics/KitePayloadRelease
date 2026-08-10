@@ -148,13 +148,15 @@ void loop() {
   if (now - lastBmeRead >= SAMPLE_INTERVAL_MS) {
     lastBmeRead = now;
 
-    float altitude, temperature;
+    float altitude, temperature, humidity;
 #ifdef SIMULATE_ALTITUDE
     altitude = baseAltitude + simulatedRelAltitude(now);
     temperature = 20.0f;
+    humidity = 50.0f;
 #else
     altitude = bme.readAltitude(SEALEVEL_PRESSURE_HPA);
     temperature = bme.readTemperature(); // nessun filtro: la temperatura varia lentamente ed è solo un readout
+    humidity = bme.readHumidity();       // idem: nessun filtro, è solo un readout
 #endif
     float relAltRaw = altitude - baseAltitude;
 
@@ -185,14 +187,15 @@ void loop() {
     pkt.seq = seq;
     pkt.relAltitude_mm = (int32_t)lroundf(g_relAltitude * 1000.0f);
     pkt.temperature_c10 = (int16_t)lroundf(temperature * 10.0f);
+    pkt.humidity_pct10 = (uint16_t)lroundf(humidity * 10.0f);
     pkt.batteryMv = readBatteryMillivolts();
     pkt.txUptimeMs = now;
 
     int state = radio.transmit((uint8_t*)&pkt, sizeof(pkt));
     radio.sleep(); // risparmio energetico tra una trasmissione e la successiva
 
-    Serial.printf("seq=%u relAlt=%.2fm temp=%.1fC batt=%umV tx=%s\n",
-                  pkt.seq, g_relAltitude, temperature, pkt.batteryMv,
+    Serial.printf("seq=%u relAlt=%.2fm temp=%.1fC hum=%.1f%% batt=%umV tx=%s\n",
+                  pkt.seq, g_relAltitude, temperature, humidity, pkt.batteryMv,
                   state == RADIOLIB_ERR_NONE ? "ok" : "ERR");
   }
 

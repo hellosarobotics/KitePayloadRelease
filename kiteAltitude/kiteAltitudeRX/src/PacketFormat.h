@@ -23,7 +23,7 @@
 #define LORA_TX_POWER_DBM      14
 #define LORA_PREAMBLE_LENGTH   8
 
-// ======= Pacchetto telemetria (15 byte) =======
+// ======= Pacchetto telemetria (17 byte) =======
 #define PACKET_MAGIC 0xA1
 
 struct __attribute__((packed)) TelemetryPacket {
@@ -31,7 +31,8 @@ struct __attribute__((packed)) TelemetryPacket {
   uint16_t seq;               // contatore incrementale, wrap a 65535
   int32_t  relAltitude_mm;    // altitudine relativa filtrata, millimetri
   int16_t  temperature_c10;   // temperatura BME280, decimi di grado C (es. 235 = 23.5°C), letta senza filtro
+  uint16_t humidity_pct10;    // umidità relativa BME280, decimi di percento (es. 455 = 45.5%), letta senza filtro
   uint16_t batteryMv;         // tensione batteria TX, millivolt (0 = non disponibile)
   uint32_t txUptimeMs;        // millis() del TX al momento dell'invio (diagnostica)
 };
-// dimensione totale: 1+2+4+2+2+4 = 15 byte
+// dimensione totale: 1+2+4+2+2+2+4 = 17 byte
