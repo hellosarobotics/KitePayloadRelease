@@ -54,8 +54,8 @@ float g_cpuTempRX = 0;
 bool cpuTempRXInit = false;
 uint32_t lastCpuTempMs = 0;
 
-// ======= Velocità verticale: finestra di 4 campioni + EMA =======
-#define VSPEED_WINDOW 4
+// ======= Velocità verticale: derivata su finestra di 3 campioni =======
+#define VSPEED_WINDOW 3
 uint32_t vsTimeMs[VSPEED_WINDOW];
 float vsAlt[VSPEED_WINDOW];
 uint8_t vsIdx = 0;
@@ -91,11 +91,12 @@ float plateauAltitude = 0;
 uint32_t plateauStableSinceMs = 0;
 bool plateauConfirmed = false;
 bool sinkAlarm = false;
-uint32_t sinkAlarmSinceMs = 0;
 uint32_t alarmRecoverSinceMs = 0;
-const float ALARM_RECOVER_VSPEED = -0.3f;
+// 0 e non un valore negativo: l'allarme deve suonare per tutta la durata della discesa,
+// quindi la "ripresa" richiede che l'aquilone non stia più scendendo affatto (velocità
+// verticale non negativa), non solo che scenda più lentamente di una soglia arbitraria.
+const float ALARM_RECOVER_VSPEED = 0.0f;
 const uint32_t RECOVER_HOLD_MS = 2000;
-const uint32_t MIN_ALARM_DURATION_MS = 10000; // una volta scattato, l'allarme suona almeno questo tempo prima di potersi spegnere
 
 // ---------------------- EEPROM: helper generici (stesso pattern raw-byte del progetto esistente) ----------------------
 void saveFloatAt(int addr, float value) {
@@ -122,8 +123,10 @@ void pushVSpeedSample(uint32_t t, float alt) {
   uint8_t oldestIdx = (vsIdx + VSPEED_WINDOW - vsCount) % VSPEED_WINDOW;
   float dt = (t - vsTimeMs[oldestIdx]) / 1000.0f;
   if (dt <= 0) return;
-  float rawSpeed = (alt - vsAlt[oldestIdx]) / dt;
-  g_vSpeed = 0.7f * g_vSpeed + 0.3f * rawSpeed;
+  // Nessuna EMA aggiuntiva qui sopra rawSpeed: la finestra di 3 campioni (~4-6s col rateo di
+  // invio del TX) già fa da smoothing, e sommarci un'altra EMA (alpha 0.3, costante di tempo
+  // ~5-6s) raddoppiava il ritardo con cui una variazione reale di velocità arrivava a schermo.
+  g_vSpeed = (alt - vsAlt[oldestIdx]) / dt;
 }
 
 // ---------------------- Macchina a stati: plateau + allarme discesa ----------------------
@@ -139,7 +142,6 @@ void updatePlateauAndAlarm(uint32_t t, float alt) {
     // sceso oltre la tolleranza rispetto al plateau
     plateauStableSinceMs = t;
     if (plateauConfirmed && (plateauAltitude - alt) > descentTriggerM) {
-      if (!sinkAlarm) sinkAlarmSinceMs = t;
       sinkAlarm = true;
     }
   }
@@ -147,12 +149,7 @@ void updatePlateauAndAlarm(uint32_t t, float alt) {
   if (sinkAlarm) {
     if (g_vSpeed > ALARM_RECOVER_VSPEED) {
       if (alarmRecoverSinceMs == 0) alarmRecoverSinceMs = t;
-      // Oltre alla ripresa sostenuta (sale o si stabilizza), l'allarme deve comunque essere
-      // suonato per almeno MIN_ALARM_DURATION_MS dall'attivazione, anche se la ripresa è
-      // immediata: altrimenti un rientro rapidissimo lo spegnerebbe prima che si senta.
-      bool recoveredLongEnough = (t - alarmRecoverSinceMs) >= RECOVER_HOLD_MS;
-      bool minDurationElapsed = (t - sinkAlarmSinceMs) >= MIN_ALARM_DURATION_MS;
-      if (recoveredLongEnough && minDurationElapsed) {
+      if (t - alarmRecoverSinceMs >= RECOVER_HOLD_MS) {
         sinkAlarm = false; alarmRecoverSinceMs = 0;
         plateauAltitude = alt; plateauStableSinceMs = t; plateauConfirmed = false;
       }
@@ -167,7 +164,6 @@ void resetVarioState() {
   plateauStableSinceMs = 0;
   plateauConfirmed = false;
   sinkAlarm = false;
-  sinkAlarmSinceMs = 0;
   alarmRecoverSinceMs = 0;
   vsIdx = 0; vsCount = 0; g_vSpeed = 0;
 }
