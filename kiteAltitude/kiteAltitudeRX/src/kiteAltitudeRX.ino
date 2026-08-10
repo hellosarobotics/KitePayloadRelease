@@ -91,9 +91,11 @@ float plateauAltitude = 0;
 uint32_t plateauStableSinceMs = 0;
 bool plateauConfirmed = false;
 bool sinkAlarm = false;
+uint32_t sinkAlarmSinceMs = 0;
 uint32_t alarmRecoverSinceMs = 0;
 const float ALARM_RECOVER_VSPEED = -0.3f;
 const uint32_t RECOVER_HOLD_MS = 2000;
+const uint32_t MIN_ALARM_DURATION_MS = 10000; // una volta scattato, l'allarme suona almeno questo tempo prima di potersi spegnere
 
 // ---------------------- EEPROM: helper generici (stesso pattern raw-byte del progetto esistente) ----------------------
 void saveFloatAt(int addr, float value) {
@@ -137,6 +139,7 @@ void updatePlateauAndAlarm(uint32_t t, float alt) {
     // sceso oltre la tolleranza rispetto al plateau
     plateauStableSinceMs = t;
     if (plateauConfirmed && (plateauAltitude - alt) > descentTriggerM) {
+      if (!sinkAlarm) sinkAlarmSinceMs = t;
       sinkAlarm = true;
     }
   }
@@ -144,7 +147,12 @@ void updatePlateauAndAlarm(uint32_t t, float alt) {
   if (sinkAlarm) {
     if (g_vSpeed > ALARM_RECOVER_VSPEED) {
       if (alarmRecoverSinceMs == 0) alarmRecoverSinceMs = t;
-      if (t - alarmRecoverSinceMs >= RECOVER_HOLD_MS) {
+      // Oltre alla ripresa sostenuta (sale o si stabilizza), l'allarme deve comunque essere
+      // suonato per almeno MIN_ALARM_DURATION_MS dall'attivazione, anche se la ripresa è
+      // immediata: altrimenti un rientro rapidissimo lo spegnerebbe prima che si senta.
+      bool recoveredLongEnough = (t - alarmRecoverSinceMs) >= RECOVER_HOLD_MS;
+      bool minDurationElapsed = (t - sinkAlarmSinceMs) >= MIN_ALARM_DURATION_MS;
+      if (recoveredLongEnough && minDurationElapsed) {
         sinkAlarm = false; alarmRecoverSinceMs = 0;
         plateauAltitude = alt; plateauStableSinceMs = t; plateauConfirmed = false;
       }
@@ -159,6 +167,7 @@ void resetVarioState() {
   plateauStableSinceMs = 0;
   plateauConfirmed = false;
   sinkAlarm = false;
+  sinkAlarmSinceMs = 0;
   alarmRecoverSinceMs = 0;
   vsIdx = 0; vsCount = 0; g_vSpeed = 0;
 }
@@ -213,8 +222,10 @@ void handleRoot() {
   html += "<script>";
   html += "function setThemeColor(hex){var m=document.getElementById('themeColor'); if(m){m.setAttribute('content',hex);} }";
 
-  // --- Web Audio: tono variometro ---
-  html += "let audioCtx=null,osc=null,gainNode=null,audioEnabled=false,beepActive=false,currentPeriod=900;";
+  // --- Web Audio: tono continuo di allarme (niente più beep intermittente: l'RX è già
+  // l'autorità su quando l'allarme deve suonare/spegnersi, incluso il minimo di 10s
+  // all'attivazione — qui ci si limita a riprodurre lo stato che arriva da /data). ---
+  html += "let audioCtx=null,osc=null,gainNode=null,audioEnabled=false;";
   html += "function enableAudio(){";
   html += "if(!audioCtx){audioCtx=new (window.AudioContext||window.webkitAudioContext)();";
   html += "osc=audioCtx.createOscillator();gainNode=audioCtx.createGain();gainNode.gain.value=0;osc.frequency.value=600;";
@@ -222,19 +233,13 @@ void handleRoot() {
   html += "audioCtx.resume();audioEnabled=true;";
   html += "var b=document.getElementById('audioBtn');b.textContent='Audio attivo';b.disabled=true;}";
 
-  html += "function beepLoop(){if(!beepActive)return;";
-  html += "gainNode.gain.setTargetAtTime(0.15,audioCtx.currentTime,0.005);";
-  html += "setTimeout(function(){if(beepActive)gainNode.gain.setTargetAtTime(0,audioCtx.currentTime,0.02);},currentPeriod*0.5);";
-  html += "setTimeout(beepLoop,currentPeriod);}";
-
   html += "function updateTone(sinking,vspeed){";
   html += "if(!audioEnabled)return;";
-  html += "if(!sinking){beepActive=false;if(gainNode)gainNode.gain.setTargetAtTime(0,audioCtx.currentTime,0.05);return;}";
+  html += "if(!sinking){gainNode.gain.setTargetAtTime(0,audioCtx.currentTime,0.1);return;}";
   html += "var absV=Math.min(Math.abs(vspeed),6);";
   html += "var freq=Math.max(150,Math.min(600,600-80*absV));";
-  html += "currentPeriod=Math.max(120,Math.min(900,900-120*absV));";
   html += "osc.frequency.setTargetAtTime(freq,audioCtx.currentTime,0.05);";
-  html += "if(!beepActive){beepActive=true;beepLoop();}}";
+  html += "gainNode.gain.setTargetAtTime(0.15,audioCtx.currentTime,0.05);}";
 
   // --- Qualità link da RSSI/SNR: prende il peggiore dei due giudizi (un solo numero buono
   // non basta se l'altro è scarso) ---
