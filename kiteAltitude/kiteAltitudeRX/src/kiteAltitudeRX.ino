@@ -181,8 +181,18 @@ void resetVarioState() {
 }
 
 // ---------------------- WEB UI ----------------------
-void handleRoot() {
-  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+// La pagina dipende solo dalle impostazioni correnti (tolleranza, hold, ecc.), non dalle
+// letture live (quelle arrivano via /data): la si ricostruisce una volta e si tiene in cache,
+// invece di rigenerare/ritrasmettere ~15-20KB di HTML a ogni GET. Senza questo, ogni probe di
+// rilevamento captive-portal del telefono (periodico, oltre al primo caricamento pagina) pagava
+// il costo pieno di concatenazione stringhe + trasmissione Wi-Fi dell'intera pagina.
+String cachedHtml;
+bool htmlDirty = true;
+
+void buildHtml() {
+  String html;
+  html.reserve(20000); // stima larga per evitare troppe riallocazioni durante la concatenazione
+  html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
   html += "<meta name='theme-color' content='#22c55e' id='themeColor'>";
   html += "<style>";
@@ -363,7 +373,10 @@ void handleRoot() {
   html += "drawChart(document.getElementById('chartHum'),hist.t,hist.hum,'#06b6d4','%',1);";
   html += "}).catch(()=>{});}";
 
-  html += "setInterval(aggiorna,1000); window.onload=function(){initCharts();loadHistory().then(aggiorna);};";
+  // 2s invece di 1s: il TX manda comunque ~1 pacchetto ogni 2s (vedi PacketFormat/TX), quindi
+  // interrogare /data più spesso non porta dati più freschi ma raddoppia inutilmente i burst
+  // di trasmissione Wi-Fi dell'RX, con relativo consumo (telefono già a un passo dall'AP).
+  html += "setInterval(aggiorna,2000); window.onload=function(){initCharts();loadHistory().then(aggiorna);};";
   html += "</script></head><body>";
 
   html += "<div class='container'>";
@@ -446,7 +459,12 @@ void handleRoot() {
   html += "    <canvas id='chartHum' class='chart'></canvas><div class='chart-hover' id='chartHumHover'>&nbsp;</div></div>";
 
   html += "</div></body></html>";
-  server.send(200, "text/html", html);
+  cachedHtml = html;
+}
+
+void handleRoot() {
+  if (htmlDirty) { buildHtml(); htmlDirty = false; }
+  server.send(200, "text/html", cachedHtml);
 }
 
 void handleData() {
@@ -528,6 +546,7 @@ void handleSetSettings() {
     float ms = server.arg("histsample").toFloat() * 1000.0f;
     if (ms >= 1000.0f && ms <= 60000.0f) { historySampleMs = ms; saveFloatAt(16, ms); }
   }
+  htmlDirty = true; // le impostazioni appena salvate sono incorporate nella pagina in cache
   server.sendHeader("Location", "/", true);
   server.send(302, "text/plain", "");
 }
@@ -564,9 +583,10 @@ void setup() {
   radio.startReceive();
 
   WiFi.softAP(ssid, password);
-  // Potenza TX ridotta: l'AP serve un telefono a pochi metri, non serve la potenza RF massima
-  // di default (che è una delle cause principali del riscaldamento del SoC in AP continuo).
-  WiFi.setTxPower(WIFI_POWER_5dBm);
+  // Potenza TX ridotta al minimo utile: l'AP serve un telefono praticamente attaccato all'RX,
+  // non serve la potenza RF di default né i 5dBm usati finché il consumo non era un vincolo
+  // stringente (RX ora spesso a batteria, non solo USB/power bank).
+  WiFi.setTxPower(WIFI_POWER_2dBm);
   Serial.print("Access Point creato. IP: ");
   Serial.println(WiFi.softAPIP());
 
