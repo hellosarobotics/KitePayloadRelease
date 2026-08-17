@@ -304,18 +304,49 @@ void buildHtml() {
 
   // --- Doppio beep di conferma al raggiungimento della quota di stabilizzazione: oscillatori
   // "usa e getta" separati dal tono continuo dell'allarme discesa (niente interferenza), tono
-  // acuto/positivo (880Hz) ben distinto dal tono grave e continuo dell'allarme (150-600Hz). ---
-  html += "function beepTone(startTime,dur){";
-  html += "var o=audioCtx.createOscillator(),g=audioCtx.createGain();o.frequency.value=880;";
+  // acuto/positivo (880Hz di default) ben distinto dal tono grave e continuo dell'allarme
+  // (150-600Hz). Frequenza parametrizzata: la riusa anche il pip di link ripristinato, con un
+  // timbro più acuto per restare distinguibile. ---
+  html += "function beepTone(startTime,dur,freq){";
+  html += "var o=audioCtx.createOscillator(),g=audioCtx.createGain();o.frequency.value=freq||880;";
   html += "g.gain.setValueAtTime(0,startTime);g.gain.linearRampToValueAtTime(0.2,startTime+0.01);g.gain.linearRampToValueAtTime(0,startTime+dur);";
   html += "o.connect(g);g.connect(audioCtx.destination);o.start(startTime);o.stop(startTime+dur+0.02);}";
   html += "function playPlateauBeep(){if(!audioEnabled)return;var t0=audioCtx.currentTime;beepTone(t0,0.12);beepTone(t0+0.16,0.12);}";
+
+  // --- Segnali di link perso/ripristinato, timbro sintetico "da drone" (onda a dente di sega +
+  // tremolo veloce sovrapposto al guadagno, come uno scanner elettronico): sweep discendente e
+  // cupo per il link perso, sweep ascendente + doppio pip acuto (1200Hz) per il ripristino, così
+  // i due eventi restano intuitivamente opposti anche solo ad orecchio. ---
+  // Filtro passa-basso agganciato allo sweep (taglia gli armonici alti del dente di sega,
+  // lasciando passare fondamentale + primo armonico): stesso sweep di prima ma timbro più
+  // cupo/ovattato invece che squillante.
+  html += "function droneSweep(t0,fFrom,fTo,dur,peakGain){";
+  html += "var o=audioCtx.createOscillator();o.type='sawtooth';";
+  html += "var filt=audioCtx.createBiquadFilter();filt.type='lowpass';filt.Q.value=1;";
+  html += "filt.frequency.setValueAtTime(fFrom*1.8,t0);filt.frequency.exponentialRampToValueAtTime(fTo*1.8,t0+dur);";
+  html += "var g=audioCtx.createGain();";
+  html += "var lfo=audioCtx.createOscillator();lfo.type='sine';lfo.frequency.value=16;";
+  html += "var lfoGain=audioCtx.createGain();lfoGain.gain.value=peakGain*0.35;";
+  html += "lfo.connect(lfoGain);lfoGain.connect(g.gain);";
+  html += "o.frequency.setValueAtTime(fFrom,t0);o.frequency.exponentialRampToValueAtTime(fTo,t0+dur);";
+  html += "g.gain.setValueAtTime(0,t0);g.gain.linearRampToValueAtTime(peakGain,t0+0.03);g.gain.linearRampToValueAtTime(0,t0+dur+0.05);";
+  html += "o.connect(filt);filt.connect(g);g.connect(audioCtx.destination);";
+  html += "o.start(t0);lfo.start(t0);o.stop(t0+dur+0.08);lfo.stop(t0+dur+0.08);}";
+  html += "function playLinkLostAlert(){if(!audioEnabled)return;droneSweep(audioCtx.currentTime,900,140,0.5,0.22);}";
+  html += "function playLinkRestored(){if(!audioEnabled)return;var t0=audioCtx.currentTime;droneSweep(t0,220,700,0.22,0.2);beepTone(t0+0.30,0.06,1200);beepTone(t0+0.42,0.06,1200);}";
 
   html += "var plateauStateInited=false,lastPlateauConfirmed=false;";
   html += "function checkPlateauReached(d){";
   html += "if(!plateauStateInited){plateauStateInited=true;lastPlateauConfirmed=d.plateauConfirmed;return;}";
   html += "if(d.linkOk&&d.plateauConfirmed&&!lastPlateauConfirmed)playPlateauBeep();";
   html += "lastPlateauConfirmed=d.plateauConfirmed;}";
+
+  html += "var linkStateInited=false,lastLinkOk=false;";
+  html += "function checkLinkTransition(d){";
+  html += "if(!linkStateInited){linkStateInited=true;lastLinkOk=d.linkOk;return;}";
+  html += "if(!d.linkOk&&lastLinkOk)playLinkLostAlert();";
+  html += "else if(d.linkOk&&!lastLinkOk)playLinkRestored();";
+  html += "lastLinkOk=d.linkOk;}";
 
   // --- Qualità link da RSSI/SNR: prende il peggiore dei due giudizi (un solo numero buono
   // non basta se l'altro è scarso) ---
@@ -416,6 +447,7 @@ void buildHtml() {
   html += "else{s.className='annunciator state-ok';st.textContent='LINK OK';sub.textContent='Telemetria in ricezione';setThemeColor('#2FE6A0');}";
   html += "updateTone(d.linkOk&&d.sinkAlarm,d.vSpeed);";
   html += "checkPlateauReached(d);";
+  html += "checkLinkTransition(d);";
   html += "if(d.linkOk)pushHistory(d);";
   html += "drawChart(document.getElementById('chartAlt'),hist.t,hist.alt,'#4C8DFF','m',1);";
   html += "drawChart(document.getElementById('chartTemp'),hist.t,hist.temp,'#FF9F45','°C',1);";
