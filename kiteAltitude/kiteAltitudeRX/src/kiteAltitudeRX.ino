@@ -208,6 +208,7 @@ void buildHtml() {
   html += "body{margin:0;background:var(--void);color:var(--text);font-family:var(--sans);}";
   html += ".container{max-width:480px;margin:24px auto 60px;padding:0 14px;}";
   html += ".titlebar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap}";
+  html += ".titlebar-actions{display:flex;gap:8px;flex-wrap:wrap}";
   html += ".title{font-family:var(--mono);font-size:16px;font-weight:700;letter-spacing:.04em}";
   html += ".title .sub{display:block;font-size:9.5px;font-weight:400;letter-spacing:.14em;color:var(--text-dim);margin-top:2px}";
   html += ".annunciator{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border:1px solid var(--panel-border);border-radius:8px;background:var(--panel);margin-bottom:14px}";
@@ -282,6 +283,17 @@ void buildHtml() {
   html += "<script>";
   html += "function setThemeColor(hex){var m=document.getElementById('themeColor'); if(m){m.setAttribute('content',hex);} }";
   html += "var LINK_TIMEOUT_S=" + String(linkTimeoutMs / 1000.0f, 0) + ";";
+
+  // Schermo intero: su Chrome Android è l'unico modo per nascondere davvero la barra degli
+  // indirizzi (che altrimenti resta visibile, colorata, in cima alla pagina). Richiede un gesto
+  // dell'utente (il tap sul pulsante), non può partire da sola al caricamento.
+  html += "function toggleFullscreen(){";
+  html += "if(!document.documentElement.requestFullscreen)return;";
+  html += "if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(){});}";
+  html += "else{document.exitFullscreen();}}";
+  html += "document.addEventListener('fullscreenchange',function(){";
+  html += "var b=document.getElementById('fsBtn');if(!b)return;";
+  html += "b.textContent=document.fullscreenElement?'Esci da schermo intero':'Schermo intero';});";
 
   // --- Web Audio: tono continuo di allarme (niente più beep intermittente: l'RX è già
   // l'autorità su quando l'allarme deve suonare/spegnersi, incluso il minimo di 10s
@@ -463,7 +475,10 @@ void buildHtml() {
   html += "<div class='container'>";
   html += "  <div class='titlebar'>";
   html += "    <div class='title'>Kite Altitude<span class='sub'>Mission Control</span></div>";
-  html += "    <button id='audioBtn' class='btn-audio' onclick='enableAudio()'>Attiva audio</button>";
+  html += "    <div class='titlebar-actions'>";
+  html += "      <button id='fsBtn' class='btn-ghost' onclick='toggleFullscreen()'>Schermo intero</button>";
+  html += "      <button id='audioBtn' class='btn-audio' onclick='enableAudio()'>Attiva audio</button>";
+  html += "    </div>";
   html += "  </div>";
 
   html += "  <div class='annunciator' id='status'>";
