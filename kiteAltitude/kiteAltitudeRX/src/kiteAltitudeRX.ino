@@ -44,6 +44,9 @@ uint32_t packetsReceived = 0;
 uint32_t packetsLostEst = 0;
 uint32_t lastPacketMs = 0;
 float g_altitude = 0;
+// Quota massima della sessione di volo corrente: vive in RAM come lo storico, quindi un
+// reload della pagina non la perde, ma un riavvio dell'RX sì (nuova sessione di volo).
+float g_maxAltitude = 0;
 float g_temperature = 0;
 float g_humidity = 0;
 float g_batteryMv = 0;
@@ -191,54 +194,94 @@ bool htmlDirty = true;
 
 void buildHtml() {
   String html;
-  html.reserve(20000); // stima larga per evitare troppe riallocazioni durante la concatenazione
+  html.reserve(24000); // tema più ricco (annunciatore, pannelli, orologio): stima larga per evitare troppe riallocazioni
   html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-  html += "<meta name='theme-color' content='#22c55e' id='themeColor'>";
+  html += "<meta name='theme-color' content='#060911' id='themeColor'>";
   html += "<style>";
-  html += "body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;background:#ffffff;color:#111827;}";
-  html += ".container{max-width:760px;margin:28px auto;padding:0 16px;}";
-  html += ".header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px}";
-  html += ".title{font-size:20px;font-weight:700;letter-spacing:.3px}";
-  html += ".status{padding:10px 14px;border-radius:10px;color:#fff;font-weight:700;min-width:200px;text-align:center;}";
-  html += ".status.ok{background:#22c55e;}";
-  html += ".status.warn{background:#f59e0b;}";
-  html += ".status.bad{background:#ef4444;}";
-  html += ".stack{display:flex;flex-direction:column;gap:14px;margin-top:14px;}";
-  html += ".card{background:#f9fafb;border:1px solid #e5e7eb;box-shadow:0 2px 6px rgba(0,0,0,0.08);border-radius:12px;padding:16px 16px 14px}";
-  html += ".metrics{display:flex;gap:24px;flex-wrap:wrap}";
-  html += ".metric{flex:1 1 140px;min-width:140px}";
-  html += ".label{color:#6b7280;font-size:12px;letter-spacing:.5px;text-transform:uppercase}";
-  html += ".value{color:#111827;font-weight:800;font-size:26px;line-height:1.1;margin-top:6px}";
-  html += ".unit{opacity:.65;font-weight:600;font-size:16px;margin-left:6px}";
-  html += ".sub{color:#6b7280;font-size:12px;margin-top:8px}";
-  html += "details.link-details{margin-top:8px}";
-  html += "details.link-details summary{cursor:pointer;color:#3b82f6;font-size:12px;font-weight:600;list-style:none}";
+  // Palette "mission control": nero spaziale, pannelli con bordo blu Insignia, verde/ambra/rosso
+  // riservati esclusivamente allo stato del link/allarme (mai usati come colori decorativi altrove).
+  // Tema scuro fisso: un pannello di controllo non ha una versione "chiara", quindi niente
+  // prefers-color-scheme qui, solo i token in :root.
+  html += ":root{--void:#060911;--panel:#0D1524;--panel-border:#1E3A6E;--accent:#4C8DFF;--good:#2FE6A0;--warn:#FFB020;--critical:#FF4433;--text:#E7ECF5;--text-dim:#7E8AA3;--text-faint:#3E4A63;--data-1:#4C8DFF;--data-2:#FF9F45;--data-3:#38D9F5;--mono:ui-monospace,'Cascadia Code','SFMono-Regular',Consolas,'Liberation Mono',monospace;--sans:-apple-system,'Segoe UI',Roboto,Ubuntu,Arial,sans-serif;}";
+  html += "*{box-sizing:border-box}";
+  html += "body{margin:0;background:var(--void);color:var(--text);font-family:var(--sans);}";
+  html += ".container{max-width:480px;margin:24px auto 60px;padding:0 14px;}";
+  html += ".titlebar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap}";
+  html += ".title{font-family:var(--mono);font-size:16px;font-weight:700;letter-spacing:.04em}";
+  html += ".title .sub{display:block;font-size:9.5px;font-weight:400;letter-spacing:.14em;color:var(--text-dim);margin-top:2px}";
+  html += ".annunciator{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border:1px solid var(--panel-border);border-radius:8px;background:var(--panel);margin-bottom:14px}";
+  html += ".annunciator-top{display:flex;align-items:center;justify-content:space-between;gap:12px}";
+  html += ".annunciator-vitals{display:flex;gap:22px;padding-top:10px;border-top:1px solid var(--panel-border)}";
+  html += ".vital{display:flex;align-items:center;gap:8px}";
+  html += ".vital .label{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}";
+  html += ".vital .val{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--text)}";
+  html += ".vital .val .unit{font-family:var(--sans);font-size:11px;font-weight:600;color:var(--text-dim);margin-left:2px}";
+  html += ".lamp-group{display:flex;align-items:center;gap:10px}";
+  // .lamp di base è "spento" (grigio, niente glow): niente falso verde prima che arrivi la prima risposta da /data.
+  html += ".lamp{width:14px;height:14px;border-radius:50%;background:var(--text-faint);flex:none;transition:background .2s,box-shadow .2s}";
+  html += ".lamp-text{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:.06em}";
+  html += ".lamp-text .sub{display:block;font-family:var(--sans);font-weight:400;font-size:10.5px;letter-spacing:0;color:var(--text-dim);margin-top:2px}";
+  html += ".clock{text-align:right;font-family:var(--mono)}";
+  html += ".clock .t{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}";
+  html += ".clock .label{display:block;font-size:9px;color:var(--text-dim);letter-spacing:.1em;margin-top:2px}";
+  html += ".annunciator.state-ok .lamp{background:var(--good);box-shadow:0 0 3px var(--good),0 0 14px 3px var(--good)}";
+  html += ".annunciator.state-warn{border-color:#5b4212}.annunciator.state-warn .lamp{background:var(--warn);box-shadow:0 0 3px var(--warn),0 0 14px 3px var(--warn)}";
+  html += ".annunciator.state-bad{border-color:#5a1c14}.annunciator.state-bad .lamp{background:var(--critical);box-shadow:0 0 3px var(--critical),0 0 14px 3px var(--critical);animation:pulse 1s infinite}";
+  html += "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}";
+  html += "@media (prefers-reduced-motion: reduce){.annunciator.state-bad .lamp{animation:none}}";
+  html += ".panel{position:relative;border:1px solid var(--panel-border);border-radius:6px;background:var(--panel);padding:16px 18px 18px;margin-bottom:12px}";
+  html += ".panel:before,.panel:after,.rivet-l:before,.rivet-l:after{content:'';position:absolute;width:3px;height:3px;border-radius:50%;background:var(--text-faint)}";
+  html += ".panel:before{top:6px;left:6px}.panel:after{top:6px;right:6px}";
+  html += ".rivet-l:before{bottom:6px;left:6px}.rivet-l:after{bottom:6px;right:6px}";
+  html += ".panel-title{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--panel-border)}";
+  html += ".metrics{display:flex;gap:18px;flex-wrap:wrap}";
+  html += ".metric{flex:1 1 110px;min-width:100px}";
+  html += ".metric .label{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px}";
+  html += ".metric .value{font-family:var(--mono);font-weight:700;font-size:clamp(22px,7vw,28px);font-variant-numeric:tabular-nums;line-height:1}";
+  html += ".metric .value.accent-good{color:var(--good)}";
+  html += ".metric .unit{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--text-dim);margin-left:4px}";
+  html += ".help{font-size:12.5px;line-height:1.55;color:var(--text-dim);margin-top:10px}";
+  html += ".qual{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.05em;padding:2px 8px;border-radius:4px}";
+  html += ".qual.ottimo{background:rgba(47,230,160,.12);color:var(--good);border:1px solid rgba(47,230,160,.35)}";
+  html += ".qual.buono{background:rgba(76,141,255,.12);color:var(--accent);border:1px solid rgba(76,141,255,.35)}";
+  html += ".qual.scarso{background:rgba(255,68,51,.12);color:var(--critical);border:1px solid rgba(255,68,51,.35)}";
+  html += "details.link-details{margin-top:10px}";
+  html += "details.link-details summary{cursor:pointer;color:var(--accent);font-size:11.5px;font-weight:700;list-style:none;font-family:var(--mono);letter-spacing:.04em}";
   html += "details.link-details summary::-webkit-details-marker{display:none}";
   html += "details.link-details summary:before{content:'▸ ';}";
   html += "details.link-details[open] summary:before{content:'▾ ';}";
-  html += "details.link-details .sub{margin-top:6px}";
-  html += ".row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}";
-  html += ".btn,.btn-ghost{appearance:none;border:none;cursor:pointer;border-radius:10px;padding:10px 14px;font-weight:700}";
-  html += ".btn{color:#fff;background:#3b82f6} .btn:hover{background:#2563eb}";
-  html += ".btn-ghost{background:#fff;border:1px solid #d1d5db;color:#111827} .btn-ghost:hover{background:#f3f4f6}";
-  html += "form{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-top:12px}";
-  html += "input[type=number]{background:#fff;border:1px solid #d1d5db;color:#111827;border-radius:8px;padding:8px 10px;min-width:110px}";
-  html += "input[type=submit]{border:none;border-radius:8px;padding:10px 14px;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}";
-  html += "input[type=submit]:hover{background:#2563eb}";
-  html += ".setting{display:flex;flex-direction:column;gap:4px;flex:1 1 220px;min-width:220px}";
+  html += "details.link-details .help{margin-top:6px}";
+  html += ".panel-collapse summary{cursor:pointer;list-style:none;display:block}";
+  html += ".panel-collapse summary::-webkit-details-marker{display:none}";
+  html += ".panel-collapse summary:before{content:'▸ '}";
+  html += ".panel-collapse[open] summary:before{content:'▾ '}";
+  html += ".subhead{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);margin:18px 0 10px}";
+  html += ".subhead:first-of-type{margin-top:4px}";
+  html += "form .setting{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}";
   html += ".setting .name{font-weight:600;font-size:13px}";
-  html += ".setting .sub{margin-top:0}";
-  html += ".qual{font-size:13px;font-weight:700;padding:2px 9px;border-radius:6px;margin-left:8px;vertical-align:middle}";
-  html += ".qual.ottimo{background:#dcfce7;color:#15803d}";
-  html += ".qual.buono{background:#dbeafe;color:#1d4ed8}";
-  html += ".qual.scarso{background:#fee2e2;color:#b91c1c}";
-  html += "canvas.chart{width:100%;height:160px;display:block;touch-action:pan-y}";
-  html += ".chart-hover{font-size:12px;color:#6b7280;margin-top:6px;min-height:16px}";
+  html += ".setting .sub{font-size:12px;color:var(--text-dim);line-height:1.5}";
+  html += "input[type=number]{background:var(--void);border:1px solid var(--panel-border);color:var(--text);font-family:var(--mono);border-radius:5px;padding:9px 10px;width:100%;font-size:14px}";
+  html += "input[type=number]:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}";
+  html += ".btn-row{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap}";
+  html += ".btn,.btn-ghost{appearance:none;cursor:pointer;border-radius:6px;padding:11px 16px;font-family:var(--mono);font-weight:700;font-size:12px;letter-spacing:.06em;text-transform:uppercase}";
+  html += ".btn{border:none;background:var(--accent);color:var(--void)} .btn:hover{background:#6ba0ff}";
+  html += ".btn-ghost{background:transparent;border:1px solid var(--panel-border);color:var(--text-dim)} .btn-ghost:hover{border-color:var(--accent);color:var(--accent)}";
+  // Stesso linguaggio grafico del badge .qual (pillola con sfondo/bordo/testo dello stesso
+  // colore): ambra finché l'audio non è attivo (va notato e premuto), verde una volta attivato.
+  html += ".btn-audio{appearance:none;cursor:pointer;border-radius:6px;padding:11px 16px;font-family:var(--mono);font-weight:700;font-size:12px;letter-spacing:.06em;text-transform:uppercase;background:rgba(255,176,32,.12);color:var(--warn);border:1px solid rgba(255,176,32,.35)}";
+  html += ".btn-audio:hover{background:rgba(255,176,32,.2)}";
+  html += ".btn-audio.on{background:rgba(47,230,160,.12);color:var(--good);border:1px solid rgba(47,230,160,.35)}";
+  html += ".btn-audio.on:hover{background:rgba(47,230,160,.2)}";
+  html += ".btn-audio:disabled{opacity:1;cursor:default}";
+  html += "button:focus-visible,a:focus-visible{outline:2px solid var(--text);outline-offset:2px}";
+  html += "canvas.chart{width:100%;height:140px;display:block;touch-action:pan-y}";
+  html += ".chart-hover{font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:6px;min-height:14px}";
   html += "</style>";
 
   html += "<script>";
   html += "function setThemeColor(hex){var m=document.getElementById('themeColor'); if(m){m.setAttribute('content',hex);} }";
+  html += "var LINK_TIMEOUT_S=" + String(linkTimeoutMs / 1000.0f, 0) + ";";
 
   // --- Web Audio: tono continuo di allarme (niente più beep intermittente: l'RX è già
   // l'autorità su quando l'allarme deve suonare/spegnersi, incluso il minimo di 10s
@@ -249,7 +292,7 @@ void buildHtml() {
   html += "osc=audioCtx.createOscillator();gainNode=audioCtx.createGain();gainNode.gain.value=0;osc.frequency.value=600;";
   html += "osc.connect(gainNode);gainNode.connect(audioCtx.destination);osc.start();}";
   html += "audioCtx.resume();audioEnabled=true;";
-  html += "var b=document.getElementById('audioBtn');b.textContent='Audio attivo';b.disabled=true;}";
+  html += "var b=document.getElementById('audioBtn');b.textContent='Audio attivo';b.disabled=true;b.classList.add('on');}";
 
   html += "function updateTone(sinking,vspeed){";
   html += "if(!audioEnabled)return;";
@@ -303,20 +346,24 @@ void buildHtml() {
   html += "var mm=(h>0?String(m).padStart(2,'0'):String(m));";
   html += "return (h>0?h+':':'')+mm+':'+String(sec).padStart(2,'0');}";
 
+  html += "function fmtClock(s){s=Math.max(0,Math.round(s));";
+  html += "var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;";
+  html += "return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');}";
+
   html += "function drawChart(canvas,xs,ys,color,unit,decimals){";
   html += "var dpr=window.devicePixelRatio||1;var w=canvas.clientWidth,h=canvas.clientHeight;";
   html += "if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}";
   html += "var ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);";
   html += "var padL=38,padR=8,padT=10,padB=20;var plotW=w-padL-padR,plotH=h-padT-padB;";
-  html += "if(xs.length<2){ctx.fillStyle='#9ca3af';ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillText('In attesa di dati...',w/2,h/2);canvas._chartData=null;return;}";
+  html += "if(xs.length<2){ctx.fillStyle='#7E8AA3';ctx.font='12px ui-monospace,Consolas,monospace';ctx.textAlign='center';ctx.fillText('In attesa di dati...',w/2,h/2);canvas._chartData=null;return;}";
   html += "var minY=Math.min.apply(null,ys),maxY=Math.max.apply(null,ys);if(minY===maxY){minY-=1;maxY+=1;}";
   html += "var pad=(maxY-minY)*0.1;minY-=pad;maxY+=pad;";
   html += "var minX=xs[0],maxX=xs[xs.length-1];";
   html += "function px(x){return padL+(x-minX)/((maxX-minX)||1)*plotW;}";
   html += "function py(y){return padT+plotH-(y-minY)/(maxY-minY)*plotH;}";
-  html += "ctx.strokeStyle='#e5e7eb';ctx.lineWidth=1;ctx.fillStyle='#9ca3af';ctx.font='10px system-ui';ctx.textAlign='right';ctx.textBaseline='middle';";
+  html += "ctx.strokeStyle='rgba(62,74,99,0.4)';ctx.lineWidth=1;ctx.fillStyle='#7E8AA3';ctx.font='10px ui-monospace,Consolas,monospace';ctx.textAlign='right';ctx.textBaseline='middle';";
   html += "for(var i=0;i<=2;i++){var v=minY+(maxY-minY)*i/2;var yy=py(v);ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(w-padR,yy);ctx.stroke();ctx.fillText(v.toFixed(decimals),padL-6,yy);}";
-  html += "ctx.fillStyle='#9ca3af';ctx.textBaseline='alphabetic';ctx.textAlign='left';ctx.fillText(fmtElapsed(minX),padL,h-4);ctx.textAlign='right';ctx.fillText(fmtElapsed(maxX),w-padR,h-4);";
+  html += "ctx.fillStyle='#7E8AA3';ctx.textBaseline='alphabetic';ctx.textAlign='left';ctx.fillText(fmtElapsed(minX),padL,h-4);ctx.textAlign='right';ctx.fillText(fmtElapsed(maxX),w-padR,h-4);";
   html += "ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();";
   html += "for(var j=0;j<xs.length;j++){var X=px(xs[j]),Y=py(ys[j]);if(j===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);}ctx.stroke();";
   html += "var lx=px(xs[xs.length-1]),ly=py(ys[ys.length-1]);ctx.fillStyle=color;ctx.beginPath();ctx.arc(lx,ly,3,0,2*Math.PI);ctx.fill();";
@@ -350,27 +397,29 @@ void buildHtml() {
   html += "function aggiorna(){fetch('/data').then(r=>r.json()).then(d=>{";
   html += "document.getElementById('relAlt').textContent=d.altitude.toFixed(1);";
   html += "document.getElementById('vspeed').textContent=(d.vSpeed>=0?'+':'')+d.vSpeed.toFixed(2);";
+  html += "document.getElementById('maxAlt').textContent=d.maxAltitude.toFixed(1);";
   html += "document.getElementById('plateauAlt').textContent=d.plateauConfirmed?d.plateauAltitude.toFixed(1):'--';";
   html += "document.getElementById('temp').textContent=d.temperature.toFixed(1);";
   html += "document.getElementById('humidity').textContent=d.humidity.toFixed(1);";
-  html += "document.getElementById('battV').textContent=(d.batteryMv/1000).toFixed(2);";
+  html += "document.getElementById('battVTop').textContent=(d.batteryMv/1000).toFixed(2);";
   html += "document.getElementById('rssi').textContent=d.rssi.toFixed(1);";
   html += "document.getElementById('snr').textContent=d.snr.toFixed(1);";
-  html += "var q=linkQuality(d.rssi,d.snr);var qe=document.getElementById('linkQual');qe.textContent=q[0];qe.className='qual '+q[1];";
+  html += "var q=linkQuality(d.rssi,d.snr);var qs=document.getElementById('sigQual');qs.textContent=q[0];qs.className='qual '+q[1];";
   html += "document.getElementById('pktRecv').textContent=d.packetsReceived;";
   html += "document.getElementById('lost').textContent=d.packetsLostEst;";
   html += "document.getElementById('age').textContent=(d.msSinceLastPacket/1000).toFixed(1);";
   html += "document.getElementById('cpuTempRX').textContent=d.cpuTempRX.toFixed(1);";
-  html += "var s=document.getElementById('status');";
-  html += "if(!d.linkOk){s.className='status bad';s.textContent='LINK PERSO';setThemeColor('#ef4444');}";
-  html += "else if(d.sinkAlarm){s.className='status warn';s.textContent='ALLARME DISCESA';setThemeColor('#f59e0b');}";
-  html += "else{s.className='status ok';s.textContent='Link OK';setThemeColor('#22c55e');}";
+  html += "document.getElementById('clockT').textContent='T+'+fmtClock(d.elapsedMs/1000);";
+  html += "var s=document.getElementById('status');var st=document.getElementById('statusText');var sub=document.getElementById('statusSub');";
+  html += "if(!d.linkOk){s.className='annunciator state-bad';st.textContent='LINK PERSO';sub.textContent='Nessun pacchetto da oltre '+LINK_TIMEOUT_S+'s';setThemeColor('#FF4433');}";
+  html += "else if(d.sinkAlarm){s.className='annunciator state-warn';st.textContent='ALLARME DISCESA';sub.textContent='Quota sotto la soglia di stabilizzazione';setThemeColor('#FFB020');}";
+  html += "else{s.className='annunciator state-ok';st.textContent='LINK OK';sub.textContent='Telemetria in ricezione';setThemeColor('#2FE6A0');}";
   html += "updateTone(d.linkOk&&d.sinkAlarm,d.vSpeed);";
   html += "checkPlateauReached(d);";
   html += "if(d.linkOk)pushHistory(d);";
-  html += "drawChart(document.getElementById('chartAlt'),hist.t,hist.alt,'#3b82f6','m',1);";
-  html += "drawChart(document.getElementById('chartTemp'),hist.t,hist.temp,'#f97316','°C',1);";
-  html += "drawChart(document.getElementById('chartHum'),hist.t,hist.hum,'#06b6d4','%',1);";
+  html += "drawChart(document.getElementById('chartAlt'),hist.t,hist.alt,'#4C8DFF','m',1);";
+  html += "drawChart(document.getElementById('chartTemp'),hist.t,hist.temp,'#FF9F45','°C',1);";
+  html += "drawChart(document.getElementById('chartHum'),hist.t,hist.hum,'#38D9F5','%',1);";
   html += "}).catch(()=>{});}";
 
   // 2s invece di 1s: il TX manda comunque ~1 pacchetto ogni 2s (vedi PacketFormat/TX), quindi
@@ -380,44 +429,52 @@ void buildHtml() {
   html += "</script></head><body>";
 
   html += "<div class='container'>";
-  html += "  <div class='header'>";
-  html += "    <div class='title'>Kite Altitude</div>";
-  html += "    <button id='audioBtn' class='btn-ghost' onclick='enableAudio()'>Attiva audio</button>";
-  html += "    <div id='status' class='status'>--</div>";
+  html += "  <div class='titlebar'>";
+  html += "    <div class='title'>Kite Altitude<span class='sub'>Mission Control</span></div>";
+  html += "    <button id='audioBtn' class='btn-audio' onclick='enableAudio()'>Attiva audio</button>";
   html += "  </div>";
 
-  html += "  <div class='stack'>";
+  html += "  <div class='annunciator' id='status'>";
+  html += "    <div class='annunciator-top'>";
+  html += "      <div class='lamp-group'><div class='lamp' id='lamp'></div><div class='lamp-text'><span id='statusText'>--</span><span class='sub' id='statusSub'>In attesa di dati...</span></div></div>";
+  html += "      <div class='clock'><div class='t' id='clockT'>T+00:00:00</div><div class='label'>SESSIONE RX</div></div>";
+  html += "    </div>";
+  html += "    <div class='annunciator-vitals'>";
+  html += "      <div class='vital'><span class='label'>Segnale</span><span id='sigQual' class='qual'>--</span></div>";
+  html += "      <div class='vital'><span class='label'>Batteria TX</span><span class='val'><span id='battVTop'>--</span><span class='unit'>V</span></span></div>";
+  html += "    </div>";
+  html += "    <details class='link-details'><summary>Dettagli RSSI/SNR</summary><p class='help'>RSSI: <span id='rssi'>--</span> dBm &middot; SNR: <span id='snr'>--</span> dB<br>Ottimo &ge;-80dBm e &ge;5dB &middot; Buono &ge;-100dBm e &ge;0dB &middot; sotto: Scarso</p></details>";
+  html += "  </div>";
 
-  html += "    <div class='card'><div class='metrics'>";
+  html += "  <div class='panel'><div class='rivet-l'></div>";
+  html += "    <div class='panel-title'>Telemetria di volo</div>";
+  html += "    <div class='metrics'>";
   html += "      <div class='metric'><div class='label'>Altitudine relativa</div><div class='value'><span id='relAlt'>--</span><span class='unit'>m</span></div></div>";
   html += "      <div class='metric'><div class='label'>Velocità verticale</div><div class='value'><span id='vspeed'>--</span><span class='unit'>m/s</span></div></div>";
-  html += "    </div></div>";
-
-  html += "    <div class='card'><div class='label'>Quota di stabilizzazione</div><div class='value'><span id='plateauAlt'>--</span><span class='unit'>m</span></div><div class='sub'>Quota a cui l'aquilone si è stabilizzato abbastanza a lungo da fare da riferimento: se poi scende oltre la soglia impostata rispetto a questo valore, scatta l'allarme di discesa. Resta '--' finché la stabilità richiesta non è confermata.</div></div>";
-
-  html += "    <div class='card'><div class='metrics'>";
+  html += "      <div class='metric'><div class='label'>Max sessione</div><div class='value accent-good'><span id='maxAlt'>--</span><span class='unit'>m</span></div></div>";
+  html += "      <div class='metric'><div class='label'>Quota di stabilizzazione</div><div class='value'><span id='plateauAlt'>--</span><span class='unit'>m</span></div></div>";
   html += "      <div class='metric'><div class='label'>Temperatura</div><div class='value'><span id='temp'>--</span><span class='unit'>&deg;C</span></div></div>";
   html += "      <div class='metric'><div class='label'>Umidità</div><div class='value'><span id='humidity'>--</span><span class='unit'>%</span></div></div>";
   html += "    </div></div>";
 
-  html += "    <div class='card'><div class='metrics'>";
-  html += "      <div class='metric'><div class='label'>Batteria TX</div><div class='value'><span id='battV'>--</span><span class='unit'>V</span></div></div>";
-  html += "      <div class='metric'><div class='label'>Link</div><div class='value'><span id='linkQual' class='qual'>--</span></div>";
-  html += "        <details class='link-details'><summary>Dettagli RSSI/SNR</summary><div class='sub'>RSSI: <span id='rssi'>--</span> dBm &middot; SNR: <span id='snr'>--</span> dB<br>Ottimo &ge;-80dBm e &ge;5dB &middot; Buono &ge;-100dBm e &ge;0dB &middot; sotto: Scarso</div></details>";
-  html += "      </div>";
-  html += "    </div></div>";
+  html += "  <div class='panel'><div class='rivet-l'></div><div class='panel-title'>Altitudine nel tempo</div>";
+  html += "    <canvas id='chartAlt' class='chart'></canvas><div class='chart-hover' id='chartAltHover'>&nbsp;</div></div>";
+  html += "  <div class='panel'><div class='rivet-l'></div><div class='panel-title'>Temperatura nel tempo</div>";
+  html += "    <canvas id='chartTemp' class='chart'></canvas><div class='chart-hover' id='chartTempHover'>&nbsp;</div></div>";
+  html += "  <div class='panel'><div class='rivet-l'></div><div class='panel-title'>Umidità nel tempo</div>";
+  html += "    <canvas id='chartHum' class='chart'></canvas><div class='chart-hover' id='chartHumHover'>&nbsp;</div></div>";
 
-  html += "    <div class='card'><div class='metrics'>";
-  html += "      <div class='metric'><div class='label'>Pacchetti (ricevuti / persi)</div><div class='value'><span id='pktRecv'>--</span> / <span id='lost'>--</span></div></div>";
-  html += "      <div class='metric'><div class='label'>Ultimo pacchetto ricevuto</div><div class='value'><span id='age'>--</span><span class='unit'>s fa</span></div></div>";
-  html += "    </div></div>";
-
-  html += "    <div class='card'><div class='label'>Temperatura CPU RX</div><div class='value'><span id='cpuTempRX'>--</span><span class='unit'>&deg;C</span></div></div>";
-
-  html += "  </div>";
-
-  html += "  <div class='card' style='margin-top:14px'>";
-  html += "    <div class='label'>Impostazioni allarme discesa</div>";
+  html += "  <details class='panel panel-collapse'>";
+  html += "    <summary class='panel-title'>Diagnostica &amp; impostazioni</summary>";
+  html += "    <div class='rivet-l'></div>";
+  html += "    <div class='subhead'>Pacchetti</div>";
+  html += "    <div class='metrics'>";
+  html += "      <div class='metric'><div class='label'>Ricevuti / persi</div><div class='value' style='font-size:20px'><span id='pktRecv'>--</span> / <span id='lost'>--</span></div></div>";
+  html += "      <div class='metric'><div class='label'>Ultimo pacchetto</div><div class='value' style='font-size:20px'><span id='age'>--</span><span class='unit'>s fa</span></div></div>";
+  html += "    </div>";
+  html += "    <div class='subhead'>Temperatura CPU RX</div>";
+  html += "    <div class='metric'><div class='value'><span id='cpuTempRX'>--</span><span class='unit'>&deg;C</span></div></div>";
+  html += "    <div class='subhead'>Impostazioni allarme discesa</div>";
   html += "    <form action='/setSettings' method='POST'>";
   html += "      <div class='setting'>";
   html += "        <span class='name'>Tolleranza quota di stabilizzazione (m)</span>";
@@ -444,19 +501,9 @@ void buildHtml() {
   html += "        <span class='sub'>Ogni quanto viene salvato un punto nei grafici storici (altitudine/temperatura/umidità). Più basso = grafici più dettagliati ma storico più corto a parità di memoria.</span>";
   html += "        <input type='number' step='1' name='histsample' value='" + String(historySampleMs / 1000.0f, 0) + "'>";
   html += "      </div>";
-  html += "      <input type='submit' value='Salva'>";
+  html += "      <div class='btn-row'><input type='submit' class='btn' value='Salva'><a href='/resetAlarm'><button type='button' class='btn-ghost'>Reset allarme</button></a></div>";
   html += "    </form>";
-  html += "    <div class='row'>";
-  html += "      <a href='/resetAlarm'><button class='btn-ghost'>Reset allarme</button></a>";
-  html += "    </div>";
-  html += "  </div>";
-
-  html += "  <div class='card' style='margin-top:14px'><div class='label'>Altitudine nel tempo</div>";
-  html += "    <canvas id='chartAlt' class='chart'></canvas><div class='chart-hover' id='chartAltHover'>&nbsp;</div></div>";
-  html += "  <div class='card' style='margin-top:14px'><div class='label'>Temperatura nel tempo</div>";
-  html += "    <canvas id='chartTemp' class='chart'></canvas><div class='chart-hover' id='chartTempHover'>&nbsp;</div></div>";
-  html += "  <div class='card' style='margin-top:14px'><div class='label'>Umidità nel tempo</div>";
-  html += "    <canvas id='chartHum' class='chart'></canvas><div class='chart-hover' id='chartHumHover'>&nbsp;</div></div>";
+  html += "  </details>";
 
   html += "</div></body></html>";
   cachedHtml = html;
@@ -474,6 +521,7 @@ void handleData() {
 
   String json = "{";
   json += "\"altitude\":" + String(g_altitude, 2) + ",";
+  json += "\"maxAltitude\":" + String(g_maxAltitude, 2) + ",";
   json += "\"temperature\":" + String(g_temperature, 1) + ",";
   json += "\"humidity\":" + String(g_humidity, 1) + ",";
   json += "\"vSpeed\":" + String(g_vSpeed, 2) + ",";
@@ -633,6 +681,7 @@ void loop() {
         g_snr = radio.getSNR();
         g_batteryMv = pkt.batteryMv;
         g_altitude = pkt.relAltitude_mm / 1000.0f;
+        if (g_altitude > g_maxAltitude) g_maxAltitude = g_altitude;
         g_temperature = pkt.temperature_c10 / 10.0f;
         g_humidity = pkt.humidity_pct10 / 10.0f;
 
